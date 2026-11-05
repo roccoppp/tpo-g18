@@ -1,0 +1,14 @@
+{
+  "name": "FarmaRed",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "shutdownAction": "stopCompose",
+  "postCreateCommand": "npm install",
+  "postStartCommand": "npm run check",
+  "customizations": {
+    "vscode": {
+      "extensions": ["mongodb.mongodb-vscode"]
+    }
+  }
+}
