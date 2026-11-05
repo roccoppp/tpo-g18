@@ -1,4 +1,4 @@
-# FarmaRed
+# tpo-g18
 
 Backoffice de una red de farmacias con persistencia políglota: MongoDB y Redis, sobre TypeScript.
 

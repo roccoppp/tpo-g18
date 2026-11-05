@@ -5,7 +5,7 @@ services:
     volumes:
       - ../..:/workspaces:cached
     environment:
-      MONGODB_URI: mongodb://mongo:27017/farmared?directConnection=true
+      MONGODB_URI: mongodb://mongo:27017/tpo-g18?directConnection=true
       REDIS_URL: redis://redis:6379
     depends_on:
       mongo:
