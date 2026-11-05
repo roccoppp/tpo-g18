@@ -21,3 +21,5 @@ export async function connectRedis() {
   await client.connect();
   return client;
 }
+
+export type RedisClient = Awaited<ReturnType<typeof connectRedis>>;

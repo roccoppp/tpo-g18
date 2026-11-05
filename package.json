@@ -7,9 +7,12 @@
   },
   "scripts": {
     "check": "tsx scripts/check.ts",
+    "seed": "tsx scripts/seed.ts",
+    "query": "tsx scripts/query.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "csv-parse": "^7.0.3",
     "mongodb": "^7.8.0",
     "redis": "^6.3.1"
   },

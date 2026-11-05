@@ -1,4 +1,4 @@
-import { connectMongo, connectRedis } from "../src/db.js";
+import { connectMongo, connectRedis } from "../src/lib/db.js";
 
 const mongo = await connectMongo();
 const redis = await connectRedis();
