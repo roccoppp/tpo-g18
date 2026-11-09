@@ -44,6 +44,20 @@ export function entero(fila: Fila, campo: string): number {
   return Number(valor);
 }
 
+/** Fecha `AAAA-MM-DD`, como medianoche UTC. Rechaza fechas inexistentes (ej. 2026-02-30). */
+export function fecha(fila: Fila, campo: string): Date {
+  const valor = requerido(fila, campo);
+  const resultado = new Date(`${valor}T00:00:00Z`);
+  const valida =
+    /^\d{4}-\d{2}-\d{2}$/.test(valor) &&
+    !Number.isNaN(resultado.getTime()) &&
+    resultado.toISOString().slice(0, 10) === valor;
+  if (!valida) {
+    throw new Error(`"${campo}" no es una fecha AAAA-MM-DD válida en ${JSON.stringify(fila)}`);
+  }
+  return resultado;
+}
+
 export function booleano(fila: Fila, campo: string): boolean {
   const valor = requerido(fila, campo);
   if (valor === "True") return true;

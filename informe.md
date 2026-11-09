@@ -1,0 +1,520 @@
+# FarmaRed: Sistema de Gestión de Red de Farmacias
+
+**Base de Datos II · Trabajo Práctico Obligatorio · 2.º cuatrimestre 2026**
+
+**Grupo:** 18
+
+| Integrante | Legajo |
+| ---------- | ------ |
+| Rocco Perrone   | 65628  |
+| TODO       | TODO   |
+| TODO       | TODO   |
+| TODO       | TODO   |
+
+**Repositorio:** TODO (link a GitHub)
+
+> **TODO:** completar la carátula con los integrantes y el link al repositorio (enunciado §5.2).
+
+---
+
+## Índice
+
+1. Introducción
+2. Arquitectura de persistencia políglota
+3. Organización del código por tipos de dominio
+4. Modelo de datos
+5. Integridad referencial
+6. Estrategia de carga de datos
+7. Consultas y servicios
+8. Consistencia en los servicios de escritura (q14 y q15)
+9. Limitaciones, alternativas evaluadas y conclusiones
+
+---
+
+## 1. Introducción
+
+> **TODO:** presentar el problema en dos o tres párrafos: FarmaRed S.A., migración del backoffice desde
+> planillas de cálculo a una arquitectura de persistencia políglota, entidades que se gestionan y
+> alcance de este trabajo (15 consultas y servicios, carga de datos y entorno en Codespaces).
+
+---
+
+## 2. Arquitectura de persistencia políglota
+
+### 2.1 Decisión
+
+El sistema usa dos motores NoSQL de paradigmas distintos:
+
+- **MongoDB (documental)** es la **base de datos central**. Guarda las entidades del negocio y es donde
+  ocurren las escrituras que deben ser consistentes.
+- **Neo4j (grafos)** es un **almacén complementario** que guarda las entidades como nodos y las
+  referencias entre ellas como relaciones. Ahí se resuelven las consultas que recorren relaciones
+  entre entidades.
+
+```text
+                    ┌─────────────────────────────┐
+                    │   Aplicación (TypeScript)   │
+                    │  consultas q01..q15, carga  │
+                    └──────────────┬──────────────┘
+                                   │ repositorios por dominio (§3)
+                 ┌─────────────────┴─────────────────┐
+                 ▼                                   ▼
+   ┌───────────────────────────┐       ┌───────────────────────────┐
+   │ MongoDB (base central)    │       │ Neo4j (grafo)             │
+   │ entidades del negocio,    │       │ nodos y relaciones; las   │
+   │ índices, agregaciones,    │       │ consultas recorren las    │
+   │ transacciones multi-doc.  │       │ relaciones en el servidor │
+   └───────────────────────────┘       └───────────────────────────┘
+```
+
+La asignación de cada entidad a un motor está en §2.4.
+
+### 2.2 Por qué MongoDB es la base central
+
+Elegimos el motor central según las características del negocio que pide considerar el enunciado (§3.2):
+
+1. **Estructura jerárquica.** Una venta tiene una cabecera e ítems de cantidad variable. El modelo
+   documental permite representar una estructura así en un único documento. Ese documento se lee y se
+   escribe completo en una sola operación, sin reconstruirlo a partir de varias tablas o claves.
+2. **Consultas por atributos.** Ventas, recetas y clientes se consultan por cliente, por farmacéutico,
+   por estado y por rango de fechas. MongoDB admite índices secundarios, simples y compuestos, sobre
+   cualquier campo. Un almacén clave-valor solo accede por clave: cada uno de esos criterios
+   obligaría a mantener a mano un índice aparte.
+3. **Reportes agregados.** Los totales por farmacéutico, los rankings de productos y los conteos por
+   período (q04, q05, q07, q11) se expresan como *aggregation pipelines* (`$match`, `$group`, `$sort`,
+   `$lookup`). Se ejecutan en el servidor y solo devuelven el resultado.
+4. **Consistencia en escrituras de varias entidades.** El servicio de registro de venta (q14) y el de
+   descuento de stock (q15) tienen que funcionar juntos: si el descuento de stock falla, no puede quedar
+   ni la venta registrada ni la receta modificada. MongoDB ofrece transacciones ACID sobre varios
+   documentos y colecciones. Por eso guardamos en MongoDB todas las entidades que esas escrituras tocan
+   (ventas, recetas y stock), y la operación se resuelve con una transacción en un único motor. Así no
+   hay que coordinar dos motores que no comparten transacciones. Las transacciones requieren un
+   *replica set*: el entorno levanta uno de un solo nodo (`rs0`) y `npm run check` verifica que una
+   transacción abortada no deja datos.
+5. **Actualizaciones concurrentes de stock.** Cada venta decrementa unidades de lotes. MongoDB permite
+   actualizaciones atómicas condicionadas, por ejemplo `$inc` con un filtro que exige unidades
+   suficientes. Dentro de una transacción, eso evita que el stock quede negativo aunque haya ventas
+   concurrentes.
+6. **Durabilidad.** La base central es la fuente de verdad, así que sus datos tienen que sobrevivir a
+   un reinicio sin pérdidas. MongoDB confirma las escrituras contra un *journal* en disco.
+
+### 2.3 Por qué Neo4j para recorrer relaciones
+
+Muchas consultas devuelven una entidad junto con los datos de otras entidades relacionadas, y algunas
+se definen directamente como un recorrido de relaciones:
+
+- q01: producto con su proveedor.
+- q02: venta con su farmacéutico y la sucursal del farmacéutico.
+- q05: farmacéuticos con la cantidad de ventas que atendieron, incluidos los que no atendieron ninguna.
+- q08: lote con su producto, su sucursal y el proveedor del producto.
+- q10: clientes de una sucursal, a través del farmacéutico que atendió la venta.
+- q12: clientes que **no** tienen ventas en el último año.
+
+En un modelo de grafos, cada referencia entre entidades (un producto y su proveedor, un lote y su
+sucursal) es una relación con nombre propio. Para este tipo de consulta, Neo4j aporta:
+
+1. **La consulta es el patrón de relaciones.** q08 se escribe como
+   `(:Lote)-[:DE_PRODUCTO]->(:Producto)-[:PROVISTO_POR]->(:Proveedor)` más
+   `(:Lote)-[:EN_SUCURSAL]->(:Sucursal)`. Los patrones opcionales (`OPTIONAL MATCH`, que cuenta los
+   ceros de q05) y los negados (`NOT EXISTS`, para q12) se expresan igual de directo.
+2. **El recorrido completo se resuelve en el servidor, en un viaje.** Desde cada nodo, Neo4j sigue
+   sus relaciones directamente hasta los nodos vecinos. La aplicación no tiene que pedir una entidad,
+   juntar los ids de sus referencias y volver a pedir las entidades relacionadas: q08 se resuelve en
+   un solo viaje, cuando combinando en la aplicación necesitaría tres (lotes, sus productos y, al
+   final, sucursales y proveedores).
+3. **Las relaciones no quedan colgadas.** Una relación siempre une dos nodos que existen: no se puede
+   crear hacia un nodo inexistente, y un nodo no se puede borrar sin borrar sus relaciones
+   (`DETACH DELETE`). Además, la carga verifica que cada producto y cada lote hayan quedado unidos a
+   sus nodos relacionados (§3.3, punto 6).
+4. **Tipos nativos.** Neo4j guarda booleanos, enteros y fechas (`date`) como tales, así que, por
+   ejemplo, el vencimiento de un lote se compara y se ordena como fecha dentro del grafo.
+
+En cuanto al alcance: en recorridos cortos y de profundidad fija, como los de estas consultas (uno a
+tres saltos), llegar a cada vecino no es más rápido que una búsqueda por índice en MongoDB. La ventaja
+está en los puntos 1 y 2: el recorrido entero se expresa como un patrón y se resuelve en el motor.
+
+Esta decisión también fija qué **no** hace Neo4j:
+
+- **No participa en las transacciones de q14 y q15.** Ventas, recetas y stock se escriben en MongoDB
+  (§2.2, punto 4). Las entidades cuya fuente de verdad es MongoDB y que además se recorren en el
+  grafo (hoy, productos y lotes) tienen en Neo4j una **copia**. La copia se escribe después de que
+  MongoDB confirma la escritura y, si queda desfasada, se reconstruye desde MongoDB (§3.3, punto 3).
+  Por ejemplo, q15 descuenta unidades de los lotes en MongoDB y después actualiza la copia, que es la
+  que lee q08.
+- **Solo es la única copia de datos que ningún servicio escribe.** Proveedores y sucursales son datos
+  de referencia: solo los escribe la carga, así que viven únicamente en Neo4j.
+- **Los filtros y agregaciones que no recorren relaciones quedan en MongoDB** (q07, q09, q11), que
+  los resuelve con índices y *aggregation pipelines* (§2.2, punto 3).
+
+### 2.4 Asignación de entidades a motores
+
+| Entidad        | Motor                    | Estructura                                                                                          | Justificación                                                                                                   | Estado       |
+| -------------- | ------------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------ |
+| proveedores    | Neo4j                    | nodo `(:Proveedor)`                                                                                 | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q01, q08)                 | Implementado |
+| productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: TODO. Neo4j: q01 y q08 recorren sus relaciones                                                         | Implementado |
+| sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
+| farmacéuticos  | TODO                     | TODO                                                                                                | TODO                                                                                                            | Pendiente    |
+| clientes       | TODO                     | TODO                                                                                                | TODO                                                                                                            | Pendiente    |
+| recetas        | MongoDB                  | TODO                                                                                                | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Pendiente    |
+| ventas/detalle | MongoDB                  | TODO                                                                                                | Estructura jerárquica + transacción de q14/q15 (§2.2)                                                           | Pendiente    |
+| stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
+
+> **TODO:** completar la tabla a medida que se implementen las entidades. Si una entidad queda en los
+> dos motores (en MongoDB como fuente de verdad y en Neo4j como copia para recorrer sus relaciones),
+> indicarlo en la columna Motor y explicar en §3 cómo se mantiene la consistencia.
+
+---
+
+## 3. Organización del código por tipos de dominio
+
+### 3.1 Problema
+
+Con persistencia políglota, una misma entidad puede estar guardada en más de un motor a la vez. Por
+ejemplo, puede estar en MongoDB como fuente de verdad y en Neo4j como copia para recorrer sus
+relaciones.
+Ninguno de los dos motores garantiza integridad referencial, y no existe una transacción que abarque
+a ambos. Si cualquier parte del código pudiera escribir directamente en cualquier motor, nada
+garantizaría que las copias de una entidad coincidan, ni siquiera que tengan la misma forma.
+
+### 3.2 Decisión
+
+El código se organiza por **tipo de dominio** (una carpeta por entidad), no por motor:
+
+```text
+src/
+  <dominio>/
+    types.ts         tipo del dominio: la forma única de la entidad para toda la aplicación
+    repository.ts    único punto de acceso a la entidad; recibe el/los motores que usa
+  queries/qNN.ts     una función por consulta; recibe repositorios, nunca motores
+  lib/
+    repositorios.ts  arma un repositorio por dominio y le inyecta su motor
+```
+
+```text
+  queries / scripts ──► repositorios por dominio ──► MongoDB / Neo4j
+        (no conocen motores)   (único lugar que los conoce)
+```
+
+### 3.3 Cómo garantiza la consistencia
+
+1. **Un único tipo por dominio.** `types.ts` define la entidad una sola vez. Todas sus
+   representaciones (documento de MongoDB, nodo de Neo4j, fila de CSV) se convierten desde ese tipo y
+   hacia él. El proyecto compila en modo `strict`, así que si se agrega un campo al tipo, las
+   funciones de conversión que construyen la entidad dejan de compilar hasta que se actualizan. Las
+   representaciones en cada motor no pueden divergir sin que el compilador lo detecte. Lo mismo vale
+   para los valores enumerados (`TIPOS_PROVEEDOR`, `CONDICIONES_VENTA`): se definen una vez y los
+   reusan tanto el tipo como la validación de la carga.
+2. **Un único punto de acceso por dominio.** Solo el repositorio sabe en qué motor o motores vive la
+   entidad, bajo qué clave o colección, y cómo se serializa. Las consultas y los scripts no reciben
+   el cliente de MongoDB ni el driver de Neo4j: reciben repositorios. Por eso, cada escritura de una
+   entidad pasa por exactamente un lugar del código.
+3. **Escrituras coordinadas dentro del repositorio.** Si una entidad vive en los dos motores, el
+   método del repositorio que la modifica escribe en ambos, siempre en el mismo orden. Primero va
+   **MongoDB**, que es la fuente de verdad (§2.1), y después **Neo4j**, que es una copia derivada. Si
+   falla la escritura en Neo4j, la copia se reconstruye desde MongoDB. Nunca se reconstruye MongoDB a
+   partir de Neo4j. Así lo hacen hoy `ProductosRepository.reemplazarTodos` y
+   `LotesRepository.reemplazarTodos`.
+4. **Conversión en el borde.** Las diferencias de representación de cada motor se resuelven dentro
+   del repositorio, y el resto de la aplicación no las ve. Por ejemplo:
+   - En el grafo, las referencias no se guardan como propiedades: `producto.id_proveedor` es la
+     relación `PROVISTO_POR`, y el repositorio reconstruye el campo a partir de ella al leer.
+   - JavaScript no distingue enteros de decimales, así que el repositorio envía `unidades` y
+     `precio_unit` como enteros de Neo4j. Si no lo hiciera, el grafo los guardaría como decimales.
+   - El vencimiento de un lote se guarda como `date` de Neo4j y vuelve como `Date`.
+5. **Atomicidad con la primitiva de cada motor.** Cada repositorio usa la garantía atómica de su
+   motor: transacciones en Neo4j y operaciones sobre un documento o transacciones en MongoDB. Por
+   ejemplo, el reemplazo de proveedores durante la carga borra los que ya no están y actualiza el
+   resto en una única transacción de Neo4j: se aplica todo o nada.
+6. **Referencias entre dominios validadas por la aplicación.** Cuando una entidad referencia a otra
+   que vive en otro motor (`producto.id_proveedor` apunta a un nodo de Neo4j), la aplicación valida la
+   referencia antes de escribir. Hoy lo hace la carga de datos, que comprueba ids únicos y referencias
+   antes de tocar cualquier motor. Además, al copiar productos y lotes al grafo, el repositorio cuenta
+   las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
+   el grafo queda como estaba. Los servicios de escritura (q13 a q15) van a validar a través de los
+   repositorios.
+
+### 3.4 Costos de la decisión
+
+- Las consultas que recorren relaciones se escriben como un único patrón de Cypher, dentro del
+  repositorio de la entidad donde empieza el recorrido (q01 en productos, q08 en lotes). Ese
+  repositorio usa los conversores de los otros dominios (`proveedorDesdeNodo`, `sucursalDesdeNodo`)
+  para devolver cada entidad con su tipo.
+- Cada entidad copiada en Neo4j suma una escritura más en cada servicio que la modifica. Por ejemplo,
+  q15 tiene que actualizar las unidades de los lotes en el grafo después de confirmar su transacción
+  en MongoDB.
+- Cada repositorio expone operaciones a medida de las consultas que lo usan, no un CRUD genérico, así
+  que una consulta nueva puede requerir un método nuevo en el repositorio.
+
+> **TODO (nota para quien continúe el informe):** en una próxima versión vamos a agregar **ejemplos
+> concretos** de lo descrito en esta sección. Algunos candidatos:
+>
+> - un tipo de dominio guardado en los dos motores, con el método del repositorio que escribe en ambos
+>   y en qué orden;
+> - la conversión en el borde (`aNodo`/`productoDesdeNodo` en `src/productos/repository.ts`);
+> - el error de compilación que aparece al agregar un campo al tipo sin actualizar las conversiones;
+> - una escritura rechazada por una referencia inválida.
+>
+> Hasta entonces, esta sección describe la decisión sin ejemplos.
+
+---
+
+## 4. Modelo de datos
+
+> **TODO:** describir el modelo en cada motor, con diagramas (enunciado §5.2):
+>
+> - **MongoDB:** colecciones, forma de los documentos (qué va embebido y qué va por referencia),
+>   índices y por qué.
+> - **Neo4j:** etiquetas, propiedades, relaciones (con su dirección), restricciones e índices, y qué
+>   consulta recorre cada relación.
+> - Un diagrama de las entidades y sus relaciones, que indique en qué motor vive cada una.
+
+### 4.1 MongoDB
+
+> **TODO**
+
+### 4.2 Neo4j
+
+Relaciones implementadas hasta ahora:
+
+```text
+(:Producto)-[:PROVISTO_POR]->(:Proveedor)      q01, q08
+(:Lote)-[:DE_PRODUCTO]->(:Producto)            q08
+(:Lote)-[:EN_SUCURSAL]->(:Sucursal)            q08
+```
+
+| Etiqueta    | Propiedades                                                                                          | Restricciones e índices                       | Origen                       |
+| ----------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------- | ---------------------------- |
+| `Proveedor` | id_proveedor, razon_social, cuit, tipo, ciudad, provincia, telefono, activo                          | `id_proveedor` único                          | Única copia                  |
+| `Sucursal`  | id_sucursal, nombre, tipo, direccion, ciudad, provincia, telefono, activo                            | `id_sucursal` único                           | Única copia                  |
+| `Producto`  | id_producto, nombre, principio_activo, categoria, presentacion, condicion_venta, precio_unit, activo | `id_producto` único                           | Copia de la colección `productos` |
+| `Lote`      | id_lote, nro_lote, unidades, vencimiento (`date`)                                                    | `id_lote` único; índice sobre `unidades` (q08) | Copia de la colección `lotes` |
+
+Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`) no son propiedades de los nodos: son
+las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
+
+> **TODO:** agregar el diagrama y las relaciones de las entidades que falten (ventas, clientes,
+> farmacéuticos, recetas).
+
+---
+
+## 5. Integridad referencial
+
+> **TODO:** los motores NoSQL no garantizan integridad referencial, y el enunciado pide documentar cómo
+> se resuelve (§3.3). Explicar qué se valida en la carga (ids únicos, referencias), qué se valida en
+> los servicios de escritura, y qué se resuelve por modelado embebido. Apoyarse en §3.3, puntos 2 y 6.
+
+---
+
+## 6. Estrategia de carga de datos
+
+> **TODO:**
+>
+> - Cómo funciona `npm run seed`: lee `data/provistos/` y `data/adicionales/`, valida y después
+>   escribe. Por qué es idempotente.
+> - Registros adicionales: el enunciado pide al menos 10 por colección. Describir qué casos borde
+>   ejercitan: fechas recientes, stock bajo, lotes próximos a vencer o vencidos, recetas vencidas,
+>   clientes sin compras, ventas pendientes, etc. Indicar qué consulta ejercita cada caso.
+
+---
+
+## 7. Consultas y servicios
+
+> **TODO:** para cada consulta incluir el enunciado, el motor o los motores, cómo se resuelven las
+> relaciones (embebido, referencia, combinación en la aplicación, etc.), el código o la sentencia, y
+> al menos un ejemplo de resultado. Los ejemplos tienen que ser salidas reales de
+> `npm run query -- <n>`. Para 13, 14 y 15 mostrar además el estado de los datos antes y después, y
+> al menos un caso de rechazo por validación.
+
+### Q01: Productos activos con todos los datos de su proveedor
+
+- **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q01.ts`
+- **Motores:** Neo4j (copia de productos y proveedores).
+- **Resolución de relaciones:** un único patrón de Cypher,
+  `(:Producto {activo: true})-[:PROVISTO_POR]->(:Proveedor)`, resuelto en el servidor en un viaje.
+  El repositorio de productos reconstruye `id_proveedor` a partir de la relación.
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q02: Ventas 'Pendiente' con el farmacéutico asignado (nombre, matrícula y sucursal) y el total
+
+- **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q02.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q03: Historial completo de un cliente: ventas y recetas ordenadas cronológicamente
+
+- **Tipo:** Lectura · **Parámetros:** `id_cliente` · **Módulo:** `src/queries/q03.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q04: Clientes con más de una receta registrada, con la cantidad
+
+- **Tipo:** Agregación · **Parámetros:** ninguno · **Módulo:** `src/queries/q04.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q05: Farmacéuticos activos y cantidad de ventas de los últimos 60 días (sin anuladas, incluye ceros)
+
+- **Tipo:** Agregación · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q05.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q06: Recetas de tratamiento prolongado 'Vigente' con próxima dispensa anterior a hoy, con datos del cliente
+
+- **Tipo:** Lectura · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q06.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q07: Top 5 productos más vendidos en unidades (solo ventas 'Completada')
+
+- **Tipo:** Agregación · **Parámetros:** ninguno · **Módulo:** `src/queries/q07.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q08: Lotes con menos de 50 unidades, con producto, sucursal y proveedor
+
+- **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q08.ts`
+- **Motores:** Neo4j (copias de lotes y productos, sucursales y proveedores).
+- **Resolución de relaciones:** un único patrón de Cypher que recorre las tres relaciones del lote,
+  `(:Lote)-[:DE_PRODUCTO]->(:Producto)-[:PROVISTO_POR]->(:Proveedor)` y
+  `(:Lote)-[:EN_SUCURSAL]->(:Sucursal)`, en un solo viaje. El plan de ejecución arranca en el índice
+  sobre `Lote.unidades` (`NodeIndexSeekByRange`) y desde cada lote sigue sus relaciones
+  (`Expand`). Las unidades se leen de la copia del grafo: q15 la actualiza después de confirmar cada
+  descuento de stock en MongoDB (§8).
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q09: Ventas 'Venta libre' con total menor a $5.000 (sin anuladas)
+
+- **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q09.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q10: Clientes atendidos en una sucursal (a través del farmacéutico de la venta, activo o no)
+
+- **Tipo:** Lectura · **Parámetros:** `id_sucursal` · **Módulo:** `src/queries/q10.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q11: Ingresos totales por farmacéutico en el mes actual (solo 'Completada')
+
+- **Tipo:** Agregación · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q11.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q12: Clientes sin ventas en el último año
+
+- **Tipo:** Lectura · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q12.ts`
+- **Motores:** TODO
+- **Resolución de relaciones:** TODO
+
+**Código:** TODO
+
+**Ejemplo de resultado:** TODO
+
+### Q13: ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica
+
+- **Tipo:** Servicio · **Parámetros:** TODO · **Módulo:** `src/queries/q13.ts`
+- **Motores:** TODO
+- **Validaciones:** TODO
+
+**Código:** TODO
+
+**Estado antes / después:** TODO
+
+**Caso de rechazo:** TODO (por ejemplo, alta con un DNI repetido)
+
+### Q14: Registro de una venta 'Completada' con validaciones y actualización de receta
+
+- **Tipo:** Servicio · **Parámetros:** TODO · **Módulo:** `src/queries/q14.ts`
+- **Motores:** TODO
+- **Validaciones:** cliente existente y activo; farmacéutico existente, activo y de una sucursal
+  'Farmacia'; productos existentes y activos; para productos bajo receta, receta existente, vigente
+  y del mismo cliente. El total se calcula a partir de los ítems.
+
+**Código:** TODO
+
+**Estado antes / después:** TODO
+
+**Caso de rechazo:** TODO
+
+### Q15: Descuento masivo de stock de una venta (FEFO, sin lotes vencidos, todo o nada)
+
+- **Tipo:** Servicio · **Parámetros:** `id_venta` · **Módulo:** `src/queries/q15.ts`
+- **Motores:** TODO
+- **Validaciones:** TODO
+
+**Código:** TODO
+
+**Estado antes / después:** TODO
+
+**Caso de rechazo:** TODO (por ejemplo, stock vigente insuficiente para algún ítem)
+
+---
+
+## 8. Consistencia en los servicios de escritura (q14 y q15)
+
+> **TODO:** explicar la estrategia elegida para que q14 y q15 funcionen juntos: si falla el descuento de
+> stock, no puede quedar una venta registrada ni una receta modificada (enunciado §4). Partir de §2.2,
+> punto 4 (transacción multi-documento en MongoDB sobre ventas, recetas y stock) y detallar el orden de
+> las operaciones, cómo se evita el stock negativo ante ventas concurrentes, y cómo se actualiza la
+> copia en Neo4j después de confirmar la transacción (por ejemplo, las unidades de los lotes, que lee
+> q08) y qué pasa si esa actualización falla (§3.3, punto 3).
+
+---
+
+## 9. Limitaciones, alternativas evaluadas y conclusiones
+
+### 9.1 Limitaciones
+
+> **TODO**
+
+### 9.2 Alternativas evaluadas
+
+> **TODO:** por ejemplo, otros motores considerados (Redis como almacén clave-valor para datos de
+> referencia y rankings, columnar para reportes) y por qué no se eligieron; modelados alternativos
+> (detalle de venta embebido o en colección aparte, entre otros).
+
+### 9.3 Conclusiones
+
+> **TODO**

@@ -1,7 +1,7 @@
-import { connectMongo, connectRedis } from "../src/lib/db.js";
+import { connectMongo, connectNeo4j } from "../src/lib/db.js";
 
 const mongo = await connectMongo();
-const redis = await connectRedis();
+const neo4j = await connectNeo4j();
 
 try {
   const db = mongo.db();
@@ -29,8 +29,9 @@ try {
   }
   console.log("Transacciones OK (rollback verificado)");
 
-  console.log(`Redis OK (${await redis.ping()})`);
+  const servidor = await neo4j.getServerInfo();
+  console.log(`Neo4j OK (${servidor.agent})`);
 } finally {
-  await redis.close();
+  await neo4j.close();
   await mongo.close();
 }

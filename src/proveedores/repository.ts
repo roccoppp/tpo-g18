@@ -1,64 +1,46 @@
-import type { RedisClient } from "../lib/db.js";
+import type { Driver, Node } from "neo4j-driver";
+import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
 import type { Proveedor } from "./types.js";
 
-// Cada proveedor es un hash `proveedor:<id_proveedor>`. Los hashes de Redis solo
-// guardan strings, así que `activo` se guarda como "true"/"false".
+// Cada proveedor es un nodo (:Proveedor). Neo4j es su única copia: ningún servicio escribe
+// proveedores. Los productos lo referencian con (:Producto)-[:PROVISTO_POR]->(:Proveedor).
 
-const PREFIJO = "proveedor:";
-
-/** Acceso a proveedores. Motor: Redis. */
+/** Acceso a proveedores. Motor: Neo4j, nodos `(:Proveedor)`. */
 export class ProveedoresRepository {
-  constructor(private readonly redis: RedisClient) {}
-
-  /** Reemplaza todos los proveedores en una única transacción MULTI (carga idempotente). */
-  async reemplazarTodos(proveedores: Proveedor[]): Promise<void> {
-    const existentes: string[] = [];
-    for await (const claves of this.redis.scanIterator({ MATCH: `${PREFIJO}*`, COUNT: 100 })) {
-      existentes.push(...claves);
-    }
-    const tx = this.redis.multi();
-    if (existentes.length > 0) tx.del(existentes);
-    for (const proveedor of proveedores) {
-      tx.hSet(clave(proveedor.id_proveedor), aHash(proveedor));
-    }
-    await tx.exec();
-  }
+  constructor(private readonly neo4j: Driver) {}
 
   /**
-   * Busca varios proveedores por id. node-redis agrupa en un pipeline los comandos
-   * emitidos en el mismo tick, así que todos los HGETALL viajan juntos.
-   * Los ids que no existen en Redis quedan fuera del mapa.
+   * Reemplaza todos los proveedores en una única transacción (carga idempotente). Los que siguen
+   * existiendo se actualizan en su lugar (MERGE), así que conservan las relaciones que les llegan
+   * desde los productos. Los que ya no están se borran junto con sus relaciones.
    */
-  async obtenerVarios(ids: Iterable<string>): Promise<Map<string, Proveedor>> {
-    const unicos = [...new Set(ids)];
-    const hashes = await Promise.all(unicos.map((id) => this.redis.hGetAll(clave(id))));
-    const proveedores = new Map<string, Proveedor>();
-    for (const hash of hashes) {
-      const proveedor = desdeHash(hash);
-      if (proveedor) proveedores.set(proveedor.id_proveedor, proveedor);
-    }
-    return proveedores;
+  async reemplazarTodos(proveedores: Proveedor[]): Promise<void> {
+    await asegurarIdUnico(this.neo4j, "Proveedor", "id_proveedor");
+    await enTransaccion(this.neo4j, async (tx) => {
+      await tx.run("MATCH (p:Proveedor) WHERE NOT p.id_proveedor IN $ids DETACH DELETE p", {
+        ids: proveedores.map((proveedor) => proveedor.id_proveedor),
+      });
+      await tx.run(
+        `UNWIND $proveedores AS fila
+         MERGE (p:Proveedor {id_proveedor: fila.id_proveedor})
+         SET p = fila`,
+        { proveedores },
+      );
+    });
   }
 }
 
-function clave(id: string): string {
-  return `${PREFIJO}${id}`;
-}
-
-function aHash(proveedor: Proveedor): Record<string, string> {
-  return { ...proveedor, activo: String(proveedor.activo) };
-}
-
-function desdeHash(hash: Record<string, string>): Proveedor | null {
-  if (Object.keys(hash).length === 0) return null;
+/** Convierte un nodo (:Proveedor) al tipo del dominio. Lo usan las consultas que llegan a él. */
+export function proveedorDesdeNodo(nodo: Node): Proveedor {
+  const p = nodo.properties;
   return {
-    id_proveedor: hash.id_proveedor,
-    razon_social: hash.razon_social,
-    cuit: hash.cuit,
-    tipo: hash.tipo as Proveedor["tipo"],
-    ciudad: hash.ciudad,
-    provincia: hash.provincia,
-    telefono: hash.telefono,
-    activo: hash.activo === "true",
+    id_proveedor: p.id_proveedor,
+    razon_social: p.razon_social,
+    cuit: p.cuit,
+    tipo: p.tipo,
+    ciudad: p.ciudad,
+    provincia: p.provincia,
+    telefono: p.telefono,
+    activo: p.activo,
   };
 }

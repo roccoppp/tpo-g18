@@ -1,6 +1,6 @@
 export const TIPOS_PROVEEDOR = ["Laboratorio", "Droguería"] as const;
 
-/** Redis: hash `proveedor:<id_proveedor>` (ver ProveedoresRepository). */
+/** Neo4j: nodo `(:Proveedor)` (ver ProveedoresRepository). */
 export interface Proveedor {
   id_proveedor: string;
   razon_social: string;

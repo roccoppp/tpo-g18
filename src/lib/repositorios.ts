@@ -1,13 +1,17 @@
 import type { Db } from "mongodb";
+import type { Driver } from "neo4j-driver";
+import { LotesRepository } from "../lotes/repository.js";
 import { ProductosRepository } from "../productos/repository.js";
 import { ProveedoresRepository } from "../proveedores/repository.js";
-import type { RedisClient } from "./db.js";
+import { SucursalesRepository } from "../sucursales/repository.js";
 
-/** Crea un repositorio por dominio, cada uno con el motor que usa. */
-export function crearRepositorios(db: Db, redis: RedisClient) {
+/** Crea un repositorio por dominio, cada uno con los motores que usa. */
+export function crearRepositorios(db: Db, neo4j: Driver) {
   return {
-    productos: new ProductosRepository(db),
-    proveedores: new ProveedoresRepository(redis),
+    lotes: new LotesRepository(db, neo4j),
+    productos: new ProductosRepository(db, neo4j),
+    proveedores: new ProveedoresRepository(neo4j),
+    sucursales: new SucursalesRepository(neo4j),
   };
 }
 

@@ -1,5 +1,5 @@
 import { MongoClient } from "mongodb";
-import { createClient } from "redis";
+import neo4j, { type Driver } from "neo4j-driver";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -15,11 +15,19 @@ export async function connectMongo(): Promise<MongoClient> {
   });
 }
 
-export async function connectRedis() {
-  const client = createClient({ url: requiredEnv("REDIS_URL") });
-  client.on("error", (error) => console.error("Error de Redis:", error));
-  await client.connect();
-  return client;
+export async function connectNeo4j(): Promise<Driver> {
+  const driver = neo4j.driver(
+    requiredEnv("NEO4J_URI"),
+    neo4j.auth.basic(requiredEnv("NEO4J_USER"), requiredEnv("NEO4J_PASSWORD")),
+    // Los enteros del grafo (unidades, precios) caben en un number de JS: se leen como number y
+    // no como el Integer de 64 bits del driver.
+    { disableLosslessIntegers: true },
+  );
+  try {
+    await driver.verifyConnectivity();
+  } catch (error) {
+    await driver.close();
+    throw error;
+  }
+  return driver;
 }
-
-export type RedisClient = Awaited<ReturnType<typeof connectRedis>>;
