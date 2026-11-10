@@ -1,0 +1,5 @@
+id_venta,id_cliente,id_farmaceutico,id_receta,fecha,tipo,medio_pago,total,estado
+V017,C005,F001,,2026-11-02,Venta libre,Efectivo,5000,Completada
+V018,C002,F005,,2026-11-04,Venta libre,Débito,3500,Completada
+V019,C007,F006,,2026-11-06,Venta libre,Crédito,8400,Completada
+V020,C001,F003,,2026-11-05,Venta libre,Efectivo,2200,Anulada

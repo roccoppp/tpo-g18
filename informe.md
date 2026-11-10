@@ -332,6 +332,16 @@ las relaciones. Cada restricción de unicidad crea además el índice que usan l
 >   ejercitan: fechas recientes, stock bajo, lotes próximos a vencer o vencidos, recetas vencidas,
 >   clientes sin compras, ventas pendientes, etc. Indicar qué consulta ejercita cada caso.
 
+Registros adicionales incorporados hasta ahora:
+
+| Archivo                               | Registros                 | Caso que ejercita                                                                                                                       |
+| ------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `data/adicionales/ventas.csv`         | V017, V018, V019, V020    | Ventas de noviembre de 2026 (fechas recientes): el mes actual de q11 y los últimos 60 días de q05. V020 está anulada, así que q05, q09 y q11 la excluyen. V017 suma exactamente $5.000, el borde de q09 |
+| `data/adicionales/detalle_ventas.csv` | D023 a D027               | Ítems de esas ventas. El total de cada venta coincide con la suma de sus ítems                                                          |
+
+Las fechas de estos registros son fijas, y las consultas calculan "hoy" con la fecha del sistema. Si
+se ejecutan en un mes posterior a noviembre de 2026, q11 no encuentra ventas del mes actual.
+
 ---
 
 ## 7. Consultas y servicios
@@ -603,12 +613,94 @@ this.coleccion.aggregate([
 ### Q05: Farmacéuticos activos y cantidad de ventas de los últimos 60 días (sin anuladas, incluye ceros)
 
 - **Tipo:** Agregación · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q05.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** Neo4j (farmacéuticos, sucursales y la copia de la cabecera de las ventas).
+- **Resolución de relaciones:** recorrido de relaciones en el servidor, en un viaje. Cada
+  `(:Farmaceutico {activo: true})` se une a su sucursal por `TRABAJA_EN` y, con un `OPTIONAL MATCH`,
+  a las `(:Venta)` que le llegan por `ATENDIDA_POR`, filtradas por fecha y estado. El patrón opcional
+  es el que conserva a los farmacéuticos sin ventas en el período: `count(v)` les da 0. Las fechas
+  límite las calcula la aplicación con la fecha del sistema (`src/lib/fechas.ts`): desde hoy menos 60
+  días hasta hoy, ambos inclusive. Se envían como `date` de Neo4j, el mismo tipo que `Venta.fecha`.
+  Se cuentan las ventas 'Completada' y las 'Pendiente'. El repositorio reconstruye `id_sucursal` a
+  partir de la relación `TRABAJA_EN`.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (f:Farmaceutico {activo: true})-[:TRABAJA_EN]->(s:Sucursal)
+OPTIONAL MATCH (f)<-[:ATENDIDA_POR]-(v:Venta)
+  WHERE v.fecha >= $desde AND v.fecha <= $hasta AND v.estado <> 'Anulada'
+RETURN f, s.id_sucursal AS idSucursal, count(v) AS cantidad
+ORDER BY cantidad DESC, f.id_farmaceutico
+```
+
+**Ejemplo de resultado** (`npm run query -- 5`, ejecutado el 10/11/2026, así que cuenta desde el
+11/09/2026). F007 trabaja en la droguería, que no registra ventas, y aparece con 0. F004 no aparece
+porque está inactivo. La venta anulada V015 de F002 no se cuenta.
+
+```json
+[
+  {
+    "id_farmaceutico": "F005",
+    "nombre": "Natalia",
+    "apellido": "Giménez",
+    "matricula": "MN-18289",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S003",
+    "activo": true,
+    "cantidad_ventas": 4
+  },
+  {
+    "id_farmaceutico": "F001",
+    "nombre": "Mariana",
+    "apellido": "Quiroga",
+    "matricula": "MN-18041",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S001",
+    "activo": true,
+    "cantidad_ventas": 2
+  },
+  {
+    "id_farmaceutico": "F002",
+    "nombre": "Sebastián",
+    "apellido": "Ledesma",
+    "matricula": "MN-18078",
+    "cargo": "Farmacéutico",
+    "id_sucursal": "S001",
+    "activo": true,
+    "cantidad_ventas": 2
+  },
+  {
+    "id_farmaceutico": "F006",
+    "nombre": "Matías",
+    "apellido": "Sandoval",
+    "matricula": "MN-18340",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S004",
+    "activo": true,
+    "cantidad_ventas": 2
+  },
+  {
+    "id_farmaceutico": "F003",
+    "nombre": "Carolina",
+    "apellido": "Benítez",
+    "matricula": "MN-18112",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S002",
+    "activo": true,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F007",
+    "nombre": "Romina",
+    "apellido": "Acuña",
+    "matricula": "MN-18401",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S005",
+    "activo": true,
+    "cantidad_ventas": 0
+  }
+]
+```
 
 ### Q06: Recetas de tratamiento prolongado 'Vigente' con próxima dispensa anterior a hoy, con datos del cliente
 

@@ -1,4 +1,4 @@
-import type { Driver, Node } from "neo4j-driver";
+import neo4j, { type Driver, type Node } from "neo4j-driver";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
 import type { Farmaceutico } from "./types.js";
 
@@ -48,6 +48,34 @@ export class FarmaceuticosRepository {
         );
       }
     });
+  }
+
+  /**
+   * Farmacéuticos activos con la cantidad de ventas no anuladas que atendieron
+   * entre `desde` y `hasta` (ambas inclusive). Un único patrón en Neo4j: el `OPTIONAL MATCH` hace que
+   * aparezcan también los que no atendieron ninguna, con cantidad 0. Ordena por cantidad (mayor
+   * primero) y, a igual cantidad, por id.
+   */
+  async activosConCantidadDeVentas(
+    desde: Date,
+    hasta: Date,
+  ): Promise<{ farmaceutico: Farmaceutico; cantidad: number }[]> {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (f:Farmaceutico {activo: true})-[:TRABAJA_EN]->(s:Sucursal)
+       OPTIONAL MATCH (f)<-[:ATENDIDA_POR]-(v:Venta)
+         WHERE v.fecha >= $desde AND v.fecha <= $hasta AND v.estado <> 'Anulada'
+       RETURN f, s.id_sucursal AS idSucursal, count(v) AS cantidad
+       ORDER BY cantidad DESC, f.id_farmaceutico`,
+      {
+        desde: neo4j.types.Date.fromStandardDateUTC(desde),
+        hasta: neo4j.types.Date.fromStandardDateUTC(hasta),
+      },
+      { routing: neo4j.routing.READ },
+    );
+    return records.map((registro) => ({
+      farmaceutico: farmaceuticoDesdeNodo(registro.get("f"), registro.get("idSucursal")),
+      cantidad: registro.get("cantidad"),
+    }));
   }
 }
 
