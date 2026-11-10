@@ -276,8 +276,8 @@ src/
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
 | `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}`         | q03       |
-| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` | q03, q04  |
-| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 (`$lookup`), q13 |
+| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06 |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13 |
 | `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
@@ -705,12 +705,107 @@ porque está inactivo. La venta anulada V015 de F002 no se cuenta.
 ### Q06: Recetas de tratamiento prolongado 'Vigente' con próxima dispensa anterior a hoy, con datos del cliente
 
 - **Tipo:** Lectura · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q06.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colecciones `recetas` y `clientes`).
+- **Resolución de relaciones:** por referencia, resuelta en el servidor. Un único *aggregation
+  pipeline* sobre `recetas` filtra por tipo, estado y próxima dispensa (`$match`) y trae el cliente de
+  cada receta con `$lookup` sobre `clientes`, en un solo viaje. El filtro usa el índice compuesto
+  `{tipo: 1, estado: 1, proxima_dispensa: 1}` (`IXSCAN`). "Hoy" lo calcula la aplicación con la
+  fecha del sistema (`src/lib/fechas.ts`): una receta cuya próxima dispensa es hoy todavía no está
+  atrasada. El resultado va de la próxima dispensa más atrasada a la más reciente.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// RecetasRepository.vigentesConDispensaAntesDe("Tratamiento prolongado", hoy())
+this.coleccion.aggregate([
+  { $match: { tipo, estado: "Vigente", proxima_dispensa: { $lt: fecha } } },
+  { $sort: { proxima_dispensa: 1, _id: 1 } },
+  { $lookup: { from: "clientes", localField: "id_cliente", foreignField: "_id", as: "cliente" } },
+  { $unwind: "$cliente" },
+]);
+```
+
+**Ejemplo de resultado** (`npm run query -- 6`, ejecutado el 10/11/2026):
+
+```json
+[
+  {
+    "_id": "RC002",
+    "id_cliente": "C003",
+    "medico": "Dra. Silvia Montenegro",
+    "matricula_medico": "MP-39877",
+    "fecha_emision": "2026-07-15T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 3,
+    "dispensas_realizadas": 2,
+    "proxima_dispensa": "2026-09-15T00:00:00.000Z",
+    "estado": "Vigente",
+    "cliente": {
+      "_id": "C003",
+      "nombre": "Carla",
+      "apellido": "Ruiz",
+      "dni": "40123456",
+      "email": "carla.r@gmail.com",
+      "telefono": "3515334455",
+      "ciudad": "Córdoba",
+      "provincia": "Córdoba",
+      "obra_social": "PAMI",
+      "nro_afiliado": "PA-771203",
+      "activo": true
+    }
+  },
+  {
+    "_id": "RC003",
+    "id_cliente": "C006",
+    "medico": "Dr. Pablo Echeverría",
+    "matricula_medico": "MP-41203",
+    "fecha_emision": "2026-08-01T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 3,
+    "dispensas_realizadas": 2,
+    "proxima_dispensa": "2026-10-01T00:00:00.000Z",
+    "estado": "Vigente",
+    "cliente": {
+      "_id": "C006",
+      "nombre": "Ricardo",
+      "apellido": "Paz",
+      "dni": "14876543",
+      "email": "ricardo.p@gmail.com",
+      "telefono": "1167667788",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "obra_social": "PAMI",
+      "nro_afiliado": "PA-662871",
+      "activo": true
+    }
+  },
+  {
+    "_id": "RC004",
+    "id_cliente": "C006",
+    "medico": "Dr. Pablo Echeverría",
+    "matricula_medico": "MP-41203",
+    "fecha_emision": "2026-09-20T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 3,
+    "dispensas_realizadas": 1,
+    "proxima_dispensa": "2026-10-20T00:00:00.000Z",
+    "estado": "Vigente",
+    "cliente": {
+      "_id": "C006",
+      "nombre": "Ricardo",
+      "apellido": "Paz",
+      "dni": "14876543",
+      "email": "ricardo.p@gmail.com",
+      "telefono": "1167667788",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "obra_social": "PAMI",
+      "nro_afiliado": "PA-662871",
+      "activo": true
+    }
+  }
+]
+```
 
 ### Q07: Top 5 productos más vendidos en unidades (solo ventas 'Completada')
 

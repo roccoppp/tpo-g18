@@ -77,6 +77,7 @@ npm run query -- <número> [parámetros...]
 | 3   | Historial de un cliente, ventas y recetas por fecha: `npm run query -- 3 <id_cliente>` | `src/queries/q03.ts` |
 | 4   | Clientes con más de una receta registrada, con la cantidad | `src/queries/q04.ts` |
 | 5   | Farmacéuticos activos y cantidad de ventas de los últimos 60 días (sin anuladas, incluye ceros) | `src/queries/q05.ts` |
+| 6   | Recetas de tratamiento prolongado 'Vigente' con próxima dispensa anterior a hoy, con datos del cliente | `src/queries/q06.ts` |
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 
