@@ -6,6 +6,7 @@ import { connectMongo, connectNeo4j } from "../src/lib/db.js";
 import { OperacionRechazada } from "../src/lib/errores.js";
 import { crearRepositorios, type Repositorios } from "../src/lib/repositorios.js";
 import { q01ProductosActivosConProveedor } from "../src/queries/q01.js";
+import { q02VentasPendientesConFarmaceutico } from "../src/queries/q02.js";
 import { q08LotesConStockBajo } from "../src/queries/q08.js";
 import {
   CAMPOS_ALTA,
@@ -19,6 +20,7 @@ type Consulta = (repos: Repositorios, args: string[]) => Promise<unknown>;
 
 const consultas: Record<number, Consulta> = {
   1: ({ productos }) => q01ProductosActivosConProveedor(productos),
+  2: ({ ventas }) => q02VentasPendientesConFarmaceutico(ventas),
   8: ({ lotes }) => q08LotesConStockBajo(lotes),
   // 13 alta campo=valor ...  |  13 modificar <id_cliente> campo=valor ...  |  13 baja <id_cliente>
   13: ({ clientes }, [operacion, ...resto]) => {

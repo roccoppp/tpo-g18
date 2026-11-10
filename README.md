@@ -36,9 +36,11 @@ Carga los CSV de `data/provistos/` y, si existen, los registros adicionales de `
 | sucursales  | Neo4j                    | nodo `(:Sucursal)`                                                               |
 | productos   | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)` |
 | stock_lotes | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `-[:DE_PRODUCTO]->(:Producto)` y `-[:EN_SUCURSAL]->(:Sucursal)` |
+| farmaceuticos | Neo4j                  | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                |
 | clientes    | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente, índice único sobre `dni`); nodo `(:Cliente)` |
+| ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera |
 
-MongoDB es la fuente de verdad de productos, lotes y clientes: la copia en Neo4j se escribe después. La colección `contadores` guarda el último número de id asignado a cada entidad, para las altas.
+MongoDB es la fuente de verdad de productos, lotes, clientes y ventas: la copia en Neo4j se escribe después. La colección `contadores` guarda el último número de id asignado a cada entidad, para las altas.
 
 ## Reconstruir las copias de Neo4j
 
@@ -70,6 +72,7 @@ npm run query -- <número> [parámetros...]
 | #   | Consulta                                          | Módulo               |
 | --- | ------------------------------------------------- | -------------------- |
 | 1   | Productos activos con todos los datos de su proveedor | `src/queries/q01.ts` |
+| 2   | Ventas 'Pendiente' con farmacéutico (nombre, matrícula y sucursal) y total | `src/queries/q02.ts` |
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 

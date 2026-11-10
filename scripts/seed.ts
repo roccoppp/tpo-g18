@@ -2,6 +2,7 @@
 // data/provistos y data/adicionales. Se puede ejecutar cuantas veces se quiera.
 
 import { OBRAS_SOCIALES, problemasDeCliente, type Cliente } from "../src/clientes/types.js";
+import { CARGOS_FARMACEUTICO, type Farmaceutico } from "../src/farmaceuticos/types.js";
 import {
   booleano,
   entero,
@@ -18,6 +19,13 @@ import type { Lote } from "../src/lotes/types.js";
 import { CONDICIONES_VENTA, type Producto } from "../src/productos/types.js";
 import { TIPOS_PROVEEDOR, type Proveedor } from "../src/proveedores/types.js";
 import { TIPOS_SUCURSAL, type Sucursal } from "../src/sucursales/types.js";
+import {
+  ESTADOS_VENTA,
+  MEDIOS_PAGO,
+  TIPOS_VENTA,
+  type ItemVenta,
+  type Venta,
+} from "../src/ventas/types.js";
 
 // Los motores no validan referencias entre sí: se valida todo antes de escribir.
 const proveedores = leerDataset("proveedores").map(proveedorDesdeFila);
@@ -25,13 +33,20 @@ const sucursales = leerDataset("sucursales").map(sucursalDesdeFila);
 const productos = leerDataset("productos").map(productoDesdeFila);
 const lotes = leerDataset("stock_lotes").map(loteDesdeFila);
 const clientes = leerDataset("clientes").map(clienteDesdeFila);
+const farmaceuticos = leerDataset("farmaceuticos").map(farmaceuticoDesdeFila);
+const ventas = leerDataset("ventas").map(ventaDesdeFila);
+const detalle = leerDataset("detalle_ventas");
 
 const idsProveedor = idsUnicos("proveedores", proveedores.map((p) => p.id_proveedor));
 const idsSucursal = idsUnicos("sucursales", sucursales.map((s) => s.id_sucursal));
 const idsProducto = idsUnicos("productos", productos.map((p) => p._id));
 idsUnicos("stock_lotes", lotes.map((l) => l._id));
-idsUnicos("clientes", clientes.map((c) => c._id));
+const idsCliente = idsUnicos("clientes", clientes.map((c) => c._id));
 idsUnicos("clientes", clientes.map((c) => c.dni), "dni");
+const idsFarmaceutico = idsUnicos("farmaceuticos", farmaceuticos.map((f) => f.id_farmaceutico));
+idsUnicos("farmaceuticos", farmaceuticos.map((f) => f.matricula), "matrículas");
+idsUnicos("ventas", ventas.map((v) => v._id));
+idsUnicos("detalle_ventas", detalle.map((fila) => requerido(fila, "id_detalle")));
 for (const producto of productos) {
   if (!idsProveedor.has(producto.id_proveedor)) {
     throw new Error(`Producto ${producto._id}: no existe el proveedor ${producto.id_proveedor}`);
@@ -52,6 +67,37 @@ for (const cliente of clientes) {
   const problemas = problemasDeCliente(cliente);
   if (problemas.length > 0) {
     throw new Error(`Cliente ${cliente._id}: ${problemas.join("; ")}`);
+  }
+}
+for (const farmaceutico of farmaceuticos) {
+  if (!idsSucursal.has(farmaceutico.id_sucursal)) {
+    throw new Error(
+      `Farmacéutico ${farmaceutico.id_farmaceutico}: no existe la sucursal ${farmaceutico.id_sucursal}`,
+    );
+  }
+}
+// Cada fila del detalle se embebe como ítem en el documento de su venta.
+const ventasPorId = new Map(ventas.map((venta) => [venta._id, venta]));
+for (const fila of detalle) {
+  const venta = ventasPorId.get(requerido(fila, "id_venta"));
+  if (!venta) throw new Error(`Detalle ${fila.id_detalle}: no existe la venta ${fila.id_venta}`);
+  venta.items.push(itemDesdeFila(fila));
+}
+for (const venta of ventas) {
+  if (!idsCliente.has(venta.id_cliente)) {
+    throw new Error(`Venta ${venta._id}: no existe el cliente ${venta.id_cliente}`);
+  }
+  if (!idsFarmaceutico.has(venta.id_farmaceutico)) {
+    throw new Error(`Venta ${venta._id}: no existe el farmacéutico ${venta.id_farmaceutico}`);
+  }
+  for (const item of venta.items) {
+    if (!idsProducto.has(item.id_producto)) {
+      throw new Error(`Venta ${venta._id}: no existe el producto ${item.id_producto}`);
+    }
+  }
+  const suma = venta.items.reduce((acum, item) => acum + item.cantidad * item.precio_unit, 0);
+  if (venta.total !== suma) {
+    throw new Error(`Venta ${venta._id}: el total ${venta.total} no coincide con sus ítems (${suma})`);
   }
 }
 
@@ -76,6 +122,13 @@ try {
 
   await repos.clientes.reemplazarTodos(clientes);
   console.log(`MongoDB + copia en Neo4j: ${clientes.length} clientes`);
+
+  // Los farmacéuticos se relacionan con las sucursales, y las ventas con los farmacéuticos.
+  await repos.farmaceuticos.reemplazarTodos(farmaceuticos);
+  console.log(`Neo4j: ${farmaceuticos.length} farmacéuticos`);
+
+  await repos.ventas.reemplazarTodas(ventas);
+  console.log(`MongoDB + copia en Neo4j: ${ventas.length} ventas`);
 } finally {
   await neo4j.close();
   await mongo.close();
@@ -145,6 +198,43 @@ function clienteDesdeFila(fila: Fila): Cliente {
     obra_social: unoDe(fila, "obra_social", OBRAS_SOCIALES),
     nro_afiliado: opcional(fila, "nro_afiliado"),
     activo: booleano(fila, "activo"),
+  };
+}
+
+function farmaceuticoDesdeFila(fila: Fila): Farmaceutico {
+  return {
+    id_farmaceutico: requerido(fila, "id_farmaceutico"),
+    nombre: requerido(fila, "nombre"),
+    apellido: requerido(fila, "apellido"),
+    matricula: requerido(fila, "matricula"),
+    cargo: unoDe(fila, "cargo", CARGOS_FARMACEUTICO),
+    id_sucursal: requerido(fila, "id_sucursal"),
+    activo: booleano(fila, "activo"),
+  };
+}
+
+/** La venta sale sin ítems: se completan con las filas de detalle_ventas. */
+function ventaDesdeFila(fila: Fila): Venta {
+  return {
+    _id: requerido(fila, "id_venta"),
+    id_cliente: requerido(fila, "id_cliente"),
+    id_farmaceutico: requerido(fila, "id_farmaceutico"),
+    id_receta: opcional(fila, "id_receta"),
+    fecha: fecha(fila, "fecha"),
+    tipo: unoDe(fila, "tipo", TIPOS_VENTA),
+    medio_pago: unoDe(fila, "medio_pago", MEDIOS_PAGO),
+    total: entero(fila, "total"),
+    estado: unoDe(fila, "estado", ESTADOS_VENTA),
+    items: [],
+  };
+}
+
+function itemDesdeFila(fila: Fila): ItemVenta {
+  return {
+    id_detalle: requerido(fila, "id_detalle"),
+    id_producto: requerido(fila, "id_producto"),
+    cantidad: entero(fila, "cantidad"),
+    precio_unit: entero(fila, "precio_unit"),
   };
 }
 

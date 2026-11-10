@@ -15,6 +15,7 @@ try {
   console.log(`Neo4j: ${await repos.productos.reconstruirCopia()} productos copiados desde MongoDB`);
   console.log(`Neo4j: ${await repos.lotes.reconstruirCopia()} lotes copiados desde MongoDB`);
   console.log(`Neo4j: ${await repos.clientes.reconstruirCopia()} clientes copiados desde MongoDB`);
+  console.log(`Neo4j: ${await repos.ventas.reconstruirCopia()} ventas copiadas desde MongoDB`);
 } finally {
   await neo4j.close();
   await mongo.close();

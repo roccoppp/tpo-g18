@@ -137,13 +137,13 @@ Esta decisión también fija qué **no** hace Neo4j:
 
 - **No participa en las transacciones de q14 y q15.** Ventas, recetas y stock se escriben en MongoDB
   (§2.2, punto 4). Las entidades cuya fuente de verdad es MongoDB y que además se recorren en el
-  grafo (hoy, productos, lotes y clientes) tienen en Neo4j una **copia**. La copia se escribe después de que
+  grafo (hoy, productos, lotes, clientes y ventas) tienen en Neo4j una **copia**. La copia se escribe después de que
   MongoDB confirma la escritura y, si queda desfasada, se reconstruye desde MongoDB con `npm run sync`
   (§3.3, punto 3).
   Por ejemplo, q15 descuenta unidades de los lotes en MongoDB y después actualiza la copia, que es la
   que lee q08.
-- **Solo es la única copia de datos que ningún servicio escribe.** Proveedores y sucursales son datos
-  de referencia: solo los escribe la carga, así que viven únicamente en Neo4j.
+- **Solo es la única copia de datos que ningún servicio escribe.** Proveedores, sucursales y
+  farmacéuticos son datos de referencia: solo los escribe la carga, así que viven únicamente en Neo4j.
 - **Los filtros y agregaciones que no recorren relaciones quedan en MongoDB** (q07, q09, q11), que
   los resuelve con índices y *aggregation pipelines* (§2.2, punto 3).
 
@@ -154,10 +154,10 @@ Esta decisión también fija qué **no** hace Neo4j:
 | proveedores    | Neo4j                    | nodo `(:Proveedor)`                                                                                 | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q01, q08)                 | Implementado |
 | productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: TODO. Neo4j: q01 y q08 recorren sus relaciones                                                         | Implementado |
 | sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
-| farmacéuticos  | TODO                     | TODO                                                                                                | TODO                                                                                                            | Pendiente    |
+| farmacéuticos  | Neo4j                    | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                                   | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q02)                      | Implementado |
 | clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
 | recetas        | MongoDB                  | TODO                                                                                                | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Pendiente    |
-| ventas/detalle | MongoDB                  | TODO                                                                                                | Estructura jerárquica + transacción de q14/q15 (§2.2)                                                           | Pendiente    |
+| ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02 recorre sus relaciones | Implementado |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
 
 > **TODO:** completar la tabla a medida que se implementen las entidades. Si una entidad queda en los
@@ -214,8 +214,9 @@ src/
    **MongoDB**, que es la fuente de verdad (§2.1), y después **Neo4j**, que es una copia derivada. Si
    falla la escritura en Neo4j, la copia se reconstruye desde MongoDB con `npm run sync`, que reescribe
    las copias sin tocar MongoDB. Nunca se reconstruye MongoDB a partir de Neo4j. Así lo hacen hoy
-   `ProductosRepository.reemplazarTodos` y `LotesRepository.reemplazarTodos` en la carga, y
-   `ClientesRepository.alta` y `ClientesRepository.actualizar` en un servicio (q13).
+   `ProductosRepository.reemplazarTodos`, `LotesRepository.reemplazarTodos` y
+   `VentasRepository.reemplazarTodas` en la carga, y `ClientesRepository.alta` y
+   `ClientesRepository.actualizar` en un servicio (q13).
 4. **Conversión en el borde.** Las diferencias de representación de cada motor se resuelven dentro
    del repositorio, y el resto de la aplicación no las ve. Por ejemplo:
    - En el grafo, las referencias no se guardan como propiedades: `producto.id_proveedor` es la
@@ -230,14 +231,15 @@ src/
 6. **Referencias entre dominios validadas por la aplicación.** Cuando una entidad referencia a otra
    que vive en otro motor (`producto.id_proveedor` apunta a un nodo de Neo4j), la aplicación valida la
    referencia antes de escribir. Hoy lo hace la carga de datos, que comprueba ids únicos y referencias
-   antes de tocar cualquier motor. Además, al copiar productos y lotes al grafo, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
+   antes de tocar cualquier motor. Además, al escribir en el grafo productos, lotes, farmacéuticos y
+   ventas, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
    el grafo queda como estaba. Los servicios de escritura validan a través de los repositorios: q13
    lo hace con el de clientes (§7), y q14 y q15 van a hacer lo mismo.
 
 ### 3.4 Costos de la decisión
 
 - Las consultas que recorren relaciones se escriben como un único patrón de Cypher, dentro del
-  repositorio de la entidad donde empieza el recorrido (q01 en productos, q08 en lotes). Ese
+  repositorio de la entidad donde empieza el recorrido (q01 en productos, q02 en ventas, q08 en lotes). Ese
   repositorio usa los conversores de los otros dominios (`proveedorDesdeNodo`, `sucursalDesdeNodo`)
   para devolver cada entidad con su tipo.
 - Cada entidad copiada en Neo4j suma una escritura más en cada servicio que la modifica. Por ejemplo,
@@ -273,10 +275,13 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}`         | q03       |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q13 |
 | `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
 
-> **TODO:** agregar las colecciones `productos`, `lotes`, `ventas` y `recetas`.
+Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
+
+> **TODO:** agregar las colecciones `productos`, `lotes` y `recetas`.
 
 ### 4.2 Neo4j
 
@@ -286,6 +291,8 @@ Relaciones implementadas hasta ahora:
 (:Producto)-[:PROVISTO_POR]->(:Proveedor)      q01, q08
 (:Lote)-[:DE_PRODUCTO]->(:Producto)            q08
 (:Lote)-[:EN_SUCURSAL]->(:Sucursal)            q08
+(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02
+(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02
 ```
 
 | Etiqueta    | Propiedades                                                                                          | Restricciones e índices                       | Origen                       |
@@ -294,13 +301,15 @@ Relaciones implementadas hasta ahora:
 | `Sucursal`  | id_sucursal, nombre, tipo, direccion, ciudad, provincia, telefono, activo                            | `id_sucursal` único                           | Única copia                  |
 | `Producto`  | id_producto, nombre, principio_activo, categoria, presentacion, condicion_venta, precio_unit, activo | `id_producto` único                           | Copia de la colección `productos` |
 | `Lote`      | id_lote, nro_lote, unidades, vencimiento (`date`)                                                    | `id_lote` único; índice sobre `unidades` (q08) | Copia de la colección `lotes` |
+| `Farmaceutico` | id_farmaceutico, nombre, apellido, matricula, cargo, activo                                       | `id_farmaceutico` único                       | Única copia                  |
 | `Cliente`   | id_cliente, nombre, apellido, dni, email, telefono, ciudad, provincia, obra_social, nro_afiliado (ausente si no tiene cobertura), activo | `id_cliente` único | Copia de la colección `clientes` |
+| `Venta`     | id_venta, fecha (`date`), tipo, medio_pago, total, estado                                            | `id_venta` único; índice sobre `estado` (q02) | Copia de la cabecera de la colección `ventas`; los ítems solo están en MongoDB |
 
-Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`) no son propiedades de los nodos: son
+Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`) no son propiedades de los nodos: son
 las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
 
-> **TODO:** agregar el diagrama y las relaciones de las entidades que falten (ventas, clientes,
-> farmacéuticos, recetas).
+> **TODO:** agregar el diagrama y las relaciones que falten, como las que unen ventas y clientes
+> para q10 y q12.
 
 ---
 
@@ -347,12 +356,83 @@ las relaciones. Cada restricción de unicidad crea además el índice que usan l
 ### Q02: Ventas 'Pendiente' con el farmacéutico asignado (nombre, matrícula y sucursal) y el total
 
 - **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q02.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** Neo4j (copia de la cabecera de las ventas, farmacéuticos y sucursales).
+- **Resolución de relaciones:** un único patrón de Cypher,
+  `(:Venta {estado: 'Pendiente'})-[:ATENDIDA_POR]->(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`, en un
+  solo viaje. El plan de ejecución arranca en el índice sobre `Venta.estado` (`NodeIndexSeek`) y desde
+  cada venta sigue sus relaciones (`Expand`). El repositorio de ventas reconstruye `id_farmaceutico` a
+  partir de la relación.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (v:Venta {estado: $estado})-[:ATENDIDA_POR]->(f:Farmaceutico)-[:TRABAJA_EN]->(s:Sucursal)
+RETURN v, f, s
+ORDER BY v.id_venta
+```
+
+**Ejemplo de resultado** (`npm run query -- 2`):
+
+```json
+[
+  {
+    "_id": "V011",
+    "id_farmaceutico": "F006",
+    "fecha": "2026-10-12T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Débito",
+    "total": 4800,
+    "estado": "Pendiente",
+    "farmaceutico": {
+      "id_farmaceutico": "F006",
+      "nombre": "Matías",
+      "apellido": "Sandoval",
+      "matricula": "MN-18340",
+      "cargo": "Director Técnico",
+      "id_sucursal": "S004",
+      "activo": true
+    },
+    "sucursal": {
+      "id_sucursal": "S004",
+      "nombre": "Farmacia Nueva Córdoba",
+      "tipo": "Farmacia",
+      "direccion": "Bv. Illia 520",
+      "ciudad": "Córdoba",
+      "provincia": "Córdoba",
+      "telefono": "3514004004",
+      "activo": true
+    }
+  },
+  {
+    "_id": "V012",
+    "id_farmaceutico": "F005",
+    "fecha": "2026-10-11T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Débito",
+    "total": 9200,
+    "estado": "Pendiente",
+    "farmaceutico": {
+      "id_farmaceutico": "F005",
+      "nombre": "Natalia",
+      "apellido": "Giménez",
+      "matricula": "MN-18289",
+      "cargo": "Director Técnico",
+      "id_sucursal": "S003",
+      "activo": true
+    },
+    "sucursal": {
+      "id_sucursal": "S003",
+      "nombre": "Farmacia Rosario Centro",
+      "tipo": "Farmacia",
+      "direccion": "Calle Córdoba 1420",
+      "ciudad": "Rosario",
+      "provincia": "Santa Fe",
+      "telefono": "3414003003",
+      "activo": true
+    }
+  }
+]
+```
 
 ### Q03: Historial completo de un cliente: ventas y recetas ordenadas cronológicamente
 
