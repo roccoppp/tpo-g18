@@ -82,6 +82,7 @@ npm run query -- <número> [parámetros...]
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
 | 9   | Ventas 'Venta libre' con total menor a $5.000 (sin anuladas) | `src/queries/q09.ts` |
 | 10  | Clientes atendidos en una sucursal (a través del farmacéutico, activo o no): `npm run query -- 10 <id_sucursal>` | `src/queries/q10.ts` |
+| 11  | Ingresos totales por farmacéutico en el mes actual (solo 'Completada') | `src/queries/q11.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 
 Uso de q13 (los campos van como `campo=valor`; un valor vacío, como `nro_afiliado=`, se toma como nulo):

@@ -67,6 +67,32 @@ export class VentasRepository {
   }
 
   /**
+   * Ingresos de las ventas 'Completada' con fecha en [`desde`, `hasta`), agrupados por farmacéutico:
+   * la suma de los totales y la cantidad de ventas. Un único pipeline que filtra con el índice
+   * `{estado, fecha}`. Solo trae los ids: los farmacéuticos están en Neo4j. Ordena por ingresos (mayor
+   * primero) y por id.
+   */
+  async ingresosPorFarmaceutico(
+    desde: Date,
+    hasta: Date,
+  ): Promise<{ id_farmaceutico: string; ingresos: number; cantidad_ventas: number }[]> {
+    return this.coleccion
+      .aggregate<{ id_farmaceutico: string; ingresos: number; cantidad_ventas: number }>([
+        { $match: { estado: "Completada", fecha: { $gte: desde, $lt: hasta } } },
+        {
+          $group: {
+            _id: "$id_farmaceutico",
+            ingresos: { $sum: "$total" },
+            cantidad_ventas: { $sum: 1 },
+          },
+        },
+        { $sort: { ingresos: -1, _id: 1 } },
+        { $project: { _id: 0, id_farmaceutico: "$_id", ingresos: 1, cantidad_ventas: 1 } },
+      ])
+      .toArray();
+  }
+
+  /**
    * Los `limite` productos con más unidades vendidas en ventas 'Completada', con los datos de cada
    * producto. Un único pipeline: filtra por estado (índice `{estado, fecha}`), desarma los ítems
    * embebidos con `$unwind`, suma las cantidades por producto y trae el producto con `$lookup` sobre

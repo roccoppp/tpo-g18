@@ -15,6 +15,7 @@ import { q07TopProductosVendidos } from "../src/queries/q07.js";
 import { q08LotesConStockBajo } from "../src/queries/q08.js";
 import { q09VentasLibresMenoresA5000 } from "../src/queries/q09.js";
 import { q10ClientesDeSucursal } from "../src/queries/q10.js";
+import { q11IngresosPorFarmaceuticoMesActual } from "../src/queries/q11.js";
 import {
   CAMPOS_ALTA,
   CAMPOS_MODIFICABLES,
@@ -37,6 +38,7 @@ const consultas: Record<number, Consulta> = {
   8: ({ lotes }) => q08LotesConStockBajo(lotes),
   9: ({ ventas }) => q09VentasLibresMenoresA5000(ventas),
   10: ({ clientes }, args) => q10ClientesDeSucursal(clientes, parametro(args, 0, "id_sucursal")),
+  11: ({ ventas, farmaceuticos }) => q11IngresosPorFarmaceuticoMesActual(ventas, farmaceuticos),
   // 13 alta campo=valor ...  |  13 modificar <id_cliente> campo=valor ...  |  13 baja <id_cliente>
   13: ({ clientes }, [operacion, ...resto]) => {
     if (operacion === "alta") {

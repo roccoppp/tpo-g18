@@ -50,6 +50,20 @@ export class FarmaceuticosRepository {
     });
   }
 
+  /** Los farmacéuticos con esos ids, activos o no. Los ids que no existen no aparecen. */
+  async buscarPorIds(ids: string[]): Promise<Farmaceutico[]> {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (f:Farmaceutico)-[:TRABAJA_EN]->(s:Sucursal)
+       WHERE f.id_farmaceutico IN $ids
+       RETURN f, s.id_sucursal AS idSucursal`,
+      { ids },
+      { routing: neo4j.routing.READ },
+    );
+    return records.map((registro) =>
+      farmaceuticoDesdeNodo(registro.get("f"), registro.get("idSucursal")),
+    );
+  }
+
   /**
    * Farmacéuticos activos con la cantidad de ventas no anuladas que atendieron
    * entre `desde` y `hasta` (ambas inclusive). Un único patrón en Neo4j: el `OPTIONAL MATCH` hace que

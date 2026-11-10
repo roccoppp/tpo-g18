@@ -275,7 +275,7 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07); `{tipo: 1, total: 1}` (q09) | q03, q07, q09 |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11 |
 | `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06 |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13 |
 | `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`) |
@@ -1069,12 +1069,78 @@ F004, un farmacéutico que hoy está inactivo. C001 aparece por V010 (y por V020
 ### Q11: Ingresos totales por farmacéutico en el mes actual (solo 'Completada')
 
 - **Tipo:** Agregación · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q11.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colección `ventas`) y Neo4j (farmacéuticos).
+- **Resolución de relaciones:** combinación en la aplicación. La agregación es un filtro por estado y
+  período más un `$group`, que no recorre relaciones, así que va a MongoDB (§2.3). Un *aggregation
+  pipeline* sobre `ventas` filtra las 'Completada' del mes con el índice `{estado: 1, fecha: 1}`
+  (`IXSCAN`) y agrupa por `id_farmaceutico`, sumando `total` y contando ventas. Los farmacéuticos
+  viven solo en Neo4j: con los ids que devolvió la agregación, la aplicación los lee en una única
+  consulta (`WHERE f.id_farmaceutico IN $ids`) y combina los dos resultados. Si una venta
+  referenciara un farmacéutico que no está en el grafo, la consulta falla en lugar de omitirlo. "Mes
+  actual" va del primer día del mes de hoy (inclusive) al primer día del mes siguiente (exclusive),
+  calculados con la fecha del sistema (`src/lib/fechas.ts`). Solo aparecen los farmacéuticos con
+  ventas completadas en el mes, estén activos o no.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// VentasRepository.ingresosPorFarmaceutico(inicioDeMes(hoy()), inicioDelMesSiguiente(hoy()))
+this.coleccion.aggregate([
+  { $match: { estado: "Completada", fecha: { $gte: desde, $lt: hasta } } },
+  { $group: { _id: "$id_farmaceutico", ingresos: { $sum: "$total" }, cantidad_ventas: { $sum: 1 } } },
+  { $sort: { ingresos: -1, _id: 1 } },
+  { $project: { _id: 0, id_farmaceutico: "$_id", ingresos: 1, cantidad_ventas: 1 } },
+]);
+```
+
+```cypher
+// FarmaceuticosRepository.buscarPorIds(ids)
+MATCH (f:Farmaceutico)-[:TRABAJA_EN]->(s:Sucursal)
+WHERE f.id_farmaceutico IN $ids
+RETURN f, s.id_sucursal AS idSucursal
+```
+
+**Ejemplo de resultado** (`npm run query -- 11`, ejecutado el 10/11/2026, así que el mes actual es
+noviembre de 2026). Salen de las ventas adicionales V017, V018 y V019 (§6). V020, de F003, está
+anulada y no cuenta, y las ventas de octubre quedan fuera del período:
+
+```json
+[
+  {
+    "id_farmaceutico": "F006",
+    "nombre": "Matías",
+    "apellido": "Sandoval",
+    "matricula": "MN-18340",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S004",
+    "activo": true,
+    "ingresos_totales": 8400,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F001",
+    "nombre": "Mariana",
+    "apellido": "Quiroga",
+    "matricula": "MN-18041",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S001",
+    "activo": true,
+    "ingresos_totales": 5000,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F005",
+    "nombre": "Natalia",
+    "apellido": "Giménez",
+    "matricula": "MN-18289",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S003",
+    "activo": true,
+    "ingresos_totales": 3500,
+    "cantidad_ventas": 1
+  }
+]
+```
 
 ### Q12: Clientes sin ventas en el último año
 
