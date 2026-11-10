@@ -80,6 +80,7 @@ npm run query -- <número> [parámetros...]
 | 6   | Recetas de tratamiento prolongado 'Vigente' con próxima dispensa anterior a hoy, con datos del cliente | `src/queries/q06.ts` |
 | 7   | Top 5 productos más vendidos en unidades (solo ventas 'Completada') | `src/queries/q07.ts` |
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
+| 9   | Ventas 'Venta libre' con total menor a $5.000 (sin anuladas) | `src/queries/q09.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 
 Uso de q13 (los campos van como `campo=valor`; un valor vacío, como `nro_afiliado=`, se toma como nulo):

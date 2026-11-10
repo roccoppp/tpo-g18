@@ -29,8 +29,8 @@ export class VentasRepository {
 
   /**
    * Reemplaza todas las ventas (carga idempotente) y asegura los índices que usan las consultas:
-   * `{id_cliente, fecha}` para `deCliente` y `{estado, fecha}` para las agregaciones que filtran por
-   * estado y período. Escribe primero en MongoDB, que es la fuente de verdad, y después en la copia
+   * `{id_cliente, fecha}` para `deCliente`, `{estado, fecha}` para las agregaciones que filtran por
+   * estado y período, y `{tipo, total}` para `noAnuladasDeTipoConTotalMenorA`. Escribe primero en MongoDB, que es la fuente de verdad, y después en la copia
    * de Neo4j. Si la copia falla, se reconstruye con `npm run sync`.
    */
   async reemplazarTodas(ventas: Venta[]): Promise<void> {
@@ -38,6 +38,7 @@ export class VentasRepository {
     if (ventas.length > 0) await this.coleccion.insertMany(ventas);
     await this.coleccion.createIndex({ id_cliente: 1, fecha: 1 });
     await this.coleccion.createIndex({ estado: 1, fecha: 1 });
+    await this.coleccion.createIndex({ tipo: 1, total: 1 });
     await this.copiarAlGrafo(ventas);
   }
 
@@ -51,6 +52,17 @@ export class VentasRepository {
   /** Ventas de un cliente con sus ítems, de la más antigua a la más reciente. */
   async deCliente(idCliente: string): Promise<Venta[]> {
     return this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
+  }
+
+  /**
+   * Ventas no anuladas del tipo dado con total menor a `maximo`, con sus ítems, de la más antigua a
+   * la más reciente. Filtra con el índice `{tipo, total}`.
+   */
+  async noAnuladasDeTipoConTotalMenorA(tipo: Venta["tipo"], maximo: number): Promise<Venta[]> {
+    return this.coleccion
+      .find({ tipo, total: { $lt: maximo }, estado: { $ne: "Anulada" } })
+      .sort({ fecha: 1, _id: 1 })
+      .toArray();
   }
 
   /**

@@ -13,6 +13,7 @@ import { q05FarmaceuticosConVentasRecientes } from "../src/queries/q05.js";
 import { q06RecetasProlongadasAtrasadas } from "../src/queries/q06.js";
 import { q07TopProductosVendidos } from "../src/queries/q07.js";
 import { q08LotesConStockBajo } from "../src/queries/q08.js";
+import { q09VentasLibresMenoresA5000 } from "../src/queries/q09.js";
 import {
   CAMPOS_ALTA,
   CAMPOS_MODIFICABLES,
@@ -33,6 +34,7 @@ const consultas: Record<number, Consulta> = {
   6: ({ recetas }) => q06RecetasProlongadasAtrasadas(recetas),
   7: ({ ventas }) => q07TopProductosVendidos(ventas),
   8: ({ lotes }) => q08LotesConStockBajo(lotes),
+  9: ({ ventas }) => q09VentasLibresMenoresA5000(ventas),
   // 13 alta campo=valor ...  |  13 modificar <id_cliente> campo=valor ...  |  13 baja <id_cliente>
   13: ({ clientes }, [operacion, ...resto]) => {
     if (operacion === "alta") {

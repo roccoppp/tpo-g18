@@ -275,7 +275,7 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07) | q03, q07 |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07); `{tipo: 1, total: 1}` (q09) | q03, q07, q09 |
 | `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06 |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13 |
 | `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`) |
@@ -922,12 +922,91 @@ no le suman la venta pendiente V012 ni la anulada V020:
 ### Q09: Ventas 'Venta libre' con total menor a $5.000 (sin anuladas)
 
 - **Tipo:** Lectura · **Parámetros:** ninguno · **Módulo:** `src/queries/q09.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colección `ventas`).
+- **Resolución de relaciones:** no cruza otras entidades. Los ítems de cada venta están embebidos,
+  así que llegan en el mismo documento. Es un `find` que filtra con el índice `{tipo: 1, total: 1}`
+  (`IXSCAN`) y descarta las anuladas. Una venta de exactamente $5.000 no entra, porque el total tiene
+  que ser menor.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// VentasRepository.noAnuladasDeTipoConTotalMenorA("Venta libre", 5000)
+this.coleccion
+  .find({ tipo, total: { $lt: maximo }, estado: { $ne: "Anulada" } })
+  .sort({ fecha: 1, _id: 1 });
+```
+
+**Ejemplo de resultado** (`npm run query -- 9`). Quedan afuera V015 y V020, que son ventas libres de
+menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
+
+```json
+[
+  {
+    "_id": "V013",
+    "id_cliente": "C001",
+    "id_farmaceutico": "F001",
+    "id_receta": null,
+    "fecha": "2026-10-02T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Efectivo",
+    "total": 4400,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D017",
+        "id_producto": "PRD011",
+        "cantidad": 2,
+        "precio_unit": 2200
+      }
+    ]
+  },
+  {
+    "_id": "V014",
+    "id_cliente": "C005",
+    "id_farmaceutico": "F005",
+    "id_receta": null,
+    "fecha": "2026-10-05T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Efectivo",
+    "total": 4600,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D018",
+        "id_producto": "PRD001",
+        "cantidad": 1,
+        "precio_unit": 2800
+      },
+      {
+        "id_detalle": "D019",
+        "id_producto": "PRD012",
+        "cantidad": 1,
+        "precio_unit": 1800
+      }
+    ]
+  },
+  {
+    "_id": "V018",
+    "id_cliente": "C002",
+    "id_farmaceutico": "F005",
+    "id_receta": null,
+    "fecha": "2026-11-04T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Débito",
+    "total": 3500,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D025",
+        "id_producto": "PRD002",
+        "cantidad": 1,
+        "precio_unit": 3500
+      }
+    ]
+  }
+]
+```
 
 ### Q10: Clientes atendidos en una sucursal (a través del farmacéutico de la venta, activo o no)
 
