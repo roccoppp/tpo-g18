@@ -27,12 +27,14 @@ export class VentasRepository {
   }
 
   /**
-   * Reemplaza todas las ventas (carga idempotente). Escribe primero en MongoDB, que es la fuente de
-   * verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye con `npm run sync`.
+   * Reemplaza todas las ventas (carga idempotente) y asegura el índice que usa `deCliente`. Escribe
+   * primero en MongoDB, que es la fuente de verdad, y después en la copia de Neo4j. Si la copia
+   * falla, se reconstruye con `npm run sync`.
    */
   async reemplazarTodas(ventas: Venta[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (ventas.length > 0) await this.coleccion.insertMany(ventas);
+    await this.coleccion.createIndex({ id_cliente: 1, fecha: 1 });
     await this.copiarAlGrafo(ventas);
   }
 
@@ -41,6 +43,11 @@ export class VentasRepository {
     const ventas = await this.coleccion.find().sort({ _id: 1 }).toArray();
     await this.copiarAlGrafo(ventas);
     return ventas.length;
+  }
+
+  /** Ventas de un cliente con sus ítems, de la más antigua a la más reciente. */
+  async deCliente(idCliente: string): Promise<Venta[]> {
+    return this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
   }
 
   /**

@@ -18,6 +18,7 @@ import { crearRepositorios } from "../src/lib/repositorios.js";
 import type { Lote } from "../src/lotes/types.js";
 import { CONDICIONES_VENTA, type Producto } from "../src/productos/types.js";
 import { TIPOS_PROVEEDOR, type Proveedor } from "../src/proveedores/types.js";
+import { ESTADOS_RECETA, TIPOS_RECETA, type Receta } from "../src/recetas/types.js";
 import { TIPOS_SUCURSAL, type Sucursal } from "../src/sucursales/types.js";
 import {
   ESTADOS_VENTA,
@@ -34,6 +35,7 @@ const productos = leerDataset("productos").map(productoDesdeFila);
 const lotes = leerDataset("stock_lotes").map(loteDesdeFila);
 const clientes = leerDataset("clientes").map(clienteDesdeFila);
 const farmaceuticos = leerDataset("farmaceuticos").map(farmaceuticoDesdeFila);
+const recetas = leerDataset("recetas").map(recetaDesdeFila);
 const ventas = leerDataset("ventas").map(ventaDesdeFila);
 const detalle = leerDataset("detalle_ventas");
 
@@ -45,6 +47,7 @@ const idsCliente = idsUnicos("clientes", clientes.map((c) => c._id));
 idsUnicos("clientes", clientes.map((c) => c.dni), "dni");
 const idsFarmaceutico = idsUnicos("farmaceuticos", farmaceuticos.map((f) => f.id_farmaceutico));
 idsUnicos("farmaceuticos", farmaceuticos.map((f) => f.matricula), "matrículas");
+const idsReceta = idsUnicos("recetas", recetas.map((r) => r._id));
 idsUnicos("ventas", ventas.map((v) => v._id));
 idsUnicos("detalle_ventas", detalle.map((fila) => requerido(fila, "id_detalle")));
 for (const producto of productos) {
@@ -76,6 +79,11 @@ for (const farmaceutico of farmaceuticos) {
     );
   }
 }
+for (const receta of recetas) {
+  if (!idsCliente.has(receta.id_cliente)) {
+    throw new Error(`Receta ${receta._id}: no existe el cliente ${receta.id_cliente}`);
+  }
+}
 // Cada fila del detalle se embebe como ítem en el documento de su venta.
 const ventasPorId = new Map(ventas.map((venta) => [venta._id, venta]));
 for (const fila of detalle) {
@@ -89,6 +97,9 @@ for (const venta of ventas) {
   }
   if (!idsFarmaceutico.has(venta.id_farmaceutico)) {
     throw new Error(`Venta ${venta._id}: no existe el farmacéutico ${venta.id_farmaceutico}`);
+  }
+  if (venta.id_receta !== null && !idsReceta.has(venta.id_receta)) {
+    throw new Error(`Venta ${venta._id}: no existe la receta ${venta.id_receta}`);
   }
   for (const item of venta.items) {
     if (!idsProducto.has(item.id_producto)) {
@@ -126,6 +137,9 @@ try {
   // Los farmacéuticos se relacionan con las sucursales, y las ventas con los farmacéuticos.
   await repos.farmaceuticos.reemplazarTodos(farmaceuticos);
   console.log(`Neo4j: ${farmaceuticos.length} farmacéuticos`);
+
+  await repos.recetas.reemplazarTodas(recetas);
+  console.log(`MongoDB: ${recetas.length} recetas`);
 
   await repos.ventas.reemplazarTodas(ventas);
   console.log(`MongoDB + copia en Neo4j: ${ventas.length} ventas`);
@@ -210,6 +224,22 @@ function farmaceuticoDesdeFila(fila: Fila): Farmaceutico {
     cargo: unoDe(fila, "cargo", CARGOS_FARMACEUTICO),
     id_sucursal: requerido(fila, "id_sucursal"),
     activo: booleano(fila, "activo"),
+  };
+}
+
+function recetaDesdeFila(fila: Fila): Receta {
+  return {
+    _id: requerido(fila, "id_receta"),
+    id_cliente: requerido(fila, "id_cliente"),
+    medico: requerido(fila, "medico"),
+    matricula_medico: requerido(fila, "matricula_medico"),
+    fecha_emision: fecha(fila, "fecha_emision"),
+    tipo: unoDe(fila, "tipo", TIPOS_RECETA),
+    dispensas_autorizadas: entero(fila, "dispensas_autorizadas"),
+    dispensas_realizadas: entero(fila, "dispensas_realizadas"),
+    proxima_dispensa:
+      opcional(fila, "proxima_dispensa") === null ? null : fecha(fila, "proxima_dispensa"),
+    estado: unoDe(fila, "estado", ESTADOS_RECETA),
   };
 }
 

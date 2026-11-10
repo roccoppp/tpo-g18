@@ -156,7 +156,7 @@ Esta decisión también fija qué **no** hace Neo4j:
 | sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
 | farmacéuticos  | Neo4j                    | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                                   | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q02)                      | Implementado |
 | clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
-| recetas        | MongoDB                  | TODO                                                                                                | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Pendiente    |
+| recetas        | MongoDB                  | colección `recetas` (`_id` = id_receta)                                                             | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Implementado |
 | ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02 recorre sus relaciones | Implementado |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
 
@@ -276,12 +276,13 @@ src/
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
 | `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}`         | q03       |
+| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` | q03       |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q13 |
 | `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
 
-> **TODO:** agregar las colecciones `productos`, `lotes` y `recetas`.
+> **TODO:** agregar las colecciones `productos` y `lotes`.
 
 ### 4.2 Neo4j
 
@@ -437,12 +438,93 @@ ORDER BY v.id_venta
 ### Q03: Historial completo de un cliente: ventas y recetas ordenadas cronológicamente
 
 - **Tipo:** Lectura · **Parámetros:** `id_cliente` · **Módulo:** `src/queries/q03.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colecciones `clientes`, `ventas` y `recetas`).
+- **Resolución de relaciones:** por referencia y combinación en la aplicación. `ventas` y `recetas`
+  guardan `id_cliente`, y cada colección se filtra con su índice compuesto sobre cliente y fecha
+  (`IXSCAN`). La aplicación une los dos resultados y los ordena por fecha. A igual fecha, la receta va
+  antes que la venta. Los ítems de cada venta están embebidos, así que no requieren otra lectura. Si
+  el cliente no existe, la consulta falla con un error. Un cliente sin ventas ni recetas devuelve una
+  lista vacía.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// VentasRepository.deCliente y RecetasRepository.deCliente
+this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
+this.coleccion.find({ id_cliente: idCliente }).sort({ fecha_emision: 1, _id: 1 }).toArray();
+
+// q03HistorialCliente
+const historial = [
+  ...recetasCliente.map((receta) => ({
+    registro: "receta" as const,
+    fecha: receta.fecha_emision,
+    ...receta,
+  })),
+  ...ventasCliente.map((venta) => ({ registro: "venta" as const, ...venta })),
+];
+return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
+```
+
+**Ejemplo de resultado** (`npm run query -- 3 C003`):
+
+```json
+[
+  {
+    "registro": "receta",
+    "fecha": "2026-07-15T00:00:00.000Z",
+    "_id": "RC002",
+    "id_cliente": "C003",
+    "medico": "Dra. Silvia Montenegro",
+    "matricula_medico": "MP-39877",
+    "fecha_emision": "2026-07-15T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 3,
+    "dispensas_realizadas": 2,
+    "proxima_dispensa": "2026-09-15T00:00:00.000Z",
+    "estado": "Vigente"
+  },
+  {
+    "registro": "venta",
+    "_id": "V004",
+    "id_cliente": "C003",
+    "id_farmaceutico": "F006",
+    "id_receta": "RC002",
+    "fecha": "2026-07-15T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Obra social",
+    "total": 5700,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D005",
+        "id_producto": "PRD004",
+        "cantidad": 1,
+        "precio_unit": 5700
+      }
+    ]
+  },
+  {
+    "registro": "venta",
+    "_id": "V005",
+    "id_cliente": "C003",
+    "id_farmaceutico": "F006",
+    "id_receta": "RC002",
+    "fecha": "2026-08-15T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Obra social",
+    "total": 12400,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D006",
+        "id_producto": "PRD004",
+        "cantidad": 2,
+        "precio_unit": 6200
+      }
+    ]
+  }
+]
+```
 
 ### Q04: Clientes con más de una receta registrada, con la cantidad
 

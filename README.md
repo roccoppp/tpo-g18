@@ -37,6 +37,7 @@ Carga los CSV de `data/provistos/` y, si existen, los registros adicionales de `
 | productos   | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)` |
 | stock_lotes | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `-[:DE_PRODUCTO]->(:Producto)` y `-[:EN_SUCURSAL]->(:Sucursal)` |
 | farmaceuticos | Neo4j                  | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                |
+| recetas     | MongoDB                  | colección `recetas` (`_id` = id_receta)                                          |
 | clientes    | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente, índice único sobre `dni`); nodo `(:Cliente)` |
 | ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera |
 
@@ -73,6 +74,7 @@ npm run query -- <número> [parámetros...]
 | --- | ------------------------------------------------- | -------------------- |
 | 1   | Productos activos con todos los datos de su proveedor | `src/queries/q01.ts` |
 | 2   | Ventas 'Pendiente' con farmacéutico (nombre, matrícula y sucursal) y total | `src/queries/q02.ts` |
+| 3   | Historial de un cliente, ventas y recetas por fecha: `npm run query -- 3 <id_cliente>` | `src/queries/q03.ts` |
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 
