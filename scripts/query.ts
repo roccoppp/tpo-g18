@@ -8,6 +8,7 @@ import { crearRepositorios, type Repositorios } from "../src/lib/repositorios.js
 import { q01ProductosActivosConProveedor } from "../src/queries/q01.js";
 import { q02VentasPendientesConFarmaceutico } from "../src/queries/q02.js";
 import { q03HistorialCliente } from "../src/queries/q03.js";
+import { q04ClientesConVariasRecetas } from "../src/queries/q04.js";
 import { q08LotesConStockBajo } from "../src/queries/q08.js";
 import {
   CAMPOS_ALTA,
@@ -24,6 +25,7 @@ const consultas: Record<number, Consulta> = {
   2: ({ ventas }) => q02VentasPendientesConFarmaceutico(ventas),
   3: ({ clientes, ventas, recetas }, args) =>
     q03HistorialCliente(clientes, ventas, recetas, parametro(args, 0, "id_cliente")),
+  4: ({ recetas }) => q04ClientesConVariasRecetas(recetas),
   8: ({ lotes }) => q08LotesConStockBajo(lotes),
   // 13 alta campo=valor ...  |  13 modificar <id_cliente> campo=valor ...  |  13 baja <id_cliente>
   13: ({ clientes }, [operacion, ...resto]) => {

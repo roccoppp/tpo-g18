@@ -276,8 +276,8 @@ src/
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
 | `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}`         | q03       |
-| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` | q03       |
-| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q13 |
+| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` | q03, q04  |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 (`$lookup`), q13 |
 | `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
@@ -529,12 +529,76 @@ return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
 ### Q04: Clientes con más de una receta registrada, con la cantidad
 
 - **Tipo:** Agregación · **Parámetros:** ninguno · **Módulo:** `src/queries/q04.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colecciones `recetas` y `clientes`).
+- **Resolución de relaciones:** por referencia, resuelta en el servidor. Un único *aggregation
+  pipeline* sobre `recetas` agrupa por `id_cliente` (`$group`), se queda con los grupos de más de una
+  receta (`$match`) y trae los datos de cada cliente con `$lookup` sobre `clientes`, en un solo viaje.
+  Se cuentan las recetas en cualquier estado (vigentes, completadas o vencidas), porque todas quedaron
+  registradas. El resultado se ordena por cantidad, de mayor a menor, y a igual cantidad por id de
+  cliente.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// RecetasRepository.clientesConMasRecetasQue(1)
+this.coleccion.aggregate([
+  { $group: { _id: "$id_cliente", cantidad: { $sum: 1 } } },
+  { $match: { cantidad: { $gt: minimo } } },
+  { $lookup: { from: "clientes", localField: "_id", foreignField: "_id", as: "cliente" } },
+  { $unwind: "$cliente" },
+  { $sort: { cantidad: -1, _id: 1 } },
+  { $project: { _id: 0, cliente: 1, cantidad: 1 } },
+]);
+```
+
+**Ejemplo de resultado** (`npm run query -- 4`):
+
+```json
+[
+  {
+    "_id": "C001",
+    "nombre": "Lucía",
+    "apellido": "Fernández",
+    "dni": "31245678",
+    "email": "lucia.f@gmail.com",
+    "telefono": "1145112233",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-310045",
+    "activo": true,
+    "cantidad_recetas": 2
+  },
+  {
+    "_id": "C002",
+    "nombre": "Martín",
+    "apellido": "Gómez",
+    "dni": "28765432",
+    "email": "martin.g@gmail.com",
+    "telefono": "3415223344",
+    "ciudad": "Rosario",
+    "provincia": "Santa Fe",
+    "obra_social": "Swiss Medical",
+    "nro_afiliado": "SM-208811",
+    "activo": true,
+    "cantidad_recetas": 2
+  },
+  {
+    "_id": "C006",
+    "nombre": "Ricardo",
+    "apellido": "Paz",
+    "dni": "14876543",
+    "email": "ricardo.p@gmail.com",
+    "telefono": "1167667788",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "PAMI",
+    "nro_afiliado": "PA-662871",
+    "activo": true,
+    "cantidad_recetas": 2
+  }
+]
+```
 
 ### Q05: Farmacéuticos activos y cantidad de ventas de los últimos 60 días (sin anuladas, incluye ceros)
 
