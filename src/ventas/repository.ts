@@ -2,6 +2,7 @@ import type { Collection, Db } from "mongodb";
 import neo4j, { type Date as FechaNeo4j, type Driver, type Node } from "neo4j-driver";
 import { farmaceuticoDesdeNodo } from "../farmaceuticos/repository.js";
 import type { Farmaceutico } from "../farmaceuticos/types.js";
+import type { Producto } from "../productos/types.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
 import { sucursalDesdeNodo } from "../sucursales/repository.js";
 import type { Sucursal } from "../sucursales/types.js";
@@ -27,14 +28,16 @@ export class VentasRepository {
   }
 
   /**
-   * Reemplaza todas las ventas (carga idempotente) y asegura el índice que usa `deCliente`. Escribe
-   * primero en MongoDB, que es la fuente de verdad, y después en la copia de Neo4j. Si la copia
-   * falla, se reconstruye con `npm run sync`.
+   * Reemplaza todas las ventas (carga idempotente) y asegura los índices que usan las consultas:
+   * `{id_cliente, fecha}` para `deCliente` y `{estado, fecha}` para las agregaciones que filtran por
+   * estado y período. Escribe primero en MongoDB, que es la fuente de verdad, y después en la copia
+   * de Neo4j. Si la copia falla, se reconstruye con `npm run sync`.
    */
   async reemplazarTodas(ventas: Venta[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (ventas.length > 0) await this.coleccion.insertMany(ventas);
     await this.coleccion.createIndex({ id_cliente: 1, fecha: 1 });
+    await this.coleccion.createIndex({ estado: 1, fecha: 1 });
     await this.copiarAlGrafo(ventas);
   }
 
@@ -48,6 +51,27 @@ export class VentasRepository {
   /** Ventas de un cliente con sus ítems, de la más antigua a la más reciente. */
   async deCliente(idCliente: string): Promise<Venta[]> {
     return this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
+  }
+
+  /**
+   * Los `limite` productos con más unidades vendidas en ventas 'Completada', con los datos de cada
+   * producto. Un único pipeline: filtra por estado (índice `{estado, fecha}`), desarma los ítems
+   * embebidos con `$unwind`, suma las cantidades por producto y trae el producto con `$lookup` sobre
+   * `productos`. A igual cantidad de unidades, ordena por id de producto.
+   */
+  async productosMasVendidos(limite: number): Promise<{ producto: Producto; unidades: number }[]> {
+    return this.coleccion
+      .aggregate<{ producto: Producto; unidades: number }>([
+        { $match: { estado: "Completada" } },
+        { $unwind: "$items" },
+        { $group: { _id: "$items.id_producto", unidades: { $sum: "$items.cantidad" } } },
+        { $sort: { unidades: -1, _id: 1 } },
+        { $limit: limite },
+        { $lookup: { from: "productos", localField: "_id", foreignField: "_id", as: "producto" } },
+        { $unwind: "$producto" },
+        { $project: { _id: 0, producto: 1, unidades: 1 } },
+      ])
+      .toArray();
   }
 
   /**

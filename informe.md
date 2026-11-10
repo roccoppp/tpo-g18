@@ -275,14 +275,15 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}`         | q03       |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07) | q03, q07 |
 | `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06 |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13 |
+| `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`) |
 | `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
 
-> **TODO:** agregar las colecciones `productos` y `lotes`.
+> **TODO:** agregar la colección `lotes`.
 
 ### 4.2 Neo4j
 
@@ -810,12 +811,98 @@ this.coleccion.aggregate([
 ### Q07: Top 5 productos más vendidos en unidades (solo ventas 'Completada')
 
 - **Tipo:** Agregación · **Parámetros:** ninguno · **Módulo:** `src/queries/q07.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** MongoDB (colecciones `ventas` y `productos`).
+- **Resolución de relaciones:** los ítems están embebidos en cada venta y el producto se trae por
+  referencia, todo en el servidor. Un único *aggregation pipeline* sobre `ventas` filtra las
+  'Completada' (`$match`, con el prefijo `estado` del índice `{estado: 1, fecha: 1}`), desarma los
+  ítems (`$unwind`), suma `cantidad` por producto (`$group`), ordena y se queda con cinco
+  (`$sort` + `$limit`). Recién después trae los datos de esos cinco productos con `$lookup` sobre
+  `productos`. A igual cantidad de unidades se ordena por id de producto, así que un empate en el
+  quinto puesto se resuelve por id. Los productos discontinuados también cuentan, porque se vendieron.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```ts
+// VentasRepository.productosMasVendidos(5)
+this.coleccion.aggregate([
+  { $match: { estado: "Completada" } },
+  { $unwind: "$items" },
+  { $group: { _id: "$items.id_producto", unidades: { $sum: "$items.cantidad" } } },
+  { $sort: { unidades: -1, _id: 1 } },
+  { $limit: limite },
+  { $lookup: { from: "productos", localField: "_id", foreignField: "_id", as: "producto" } },
+  { $unwind: "$producto" },
+  { $project: { _id: 0, producto: 1, unidades: 1 } },
+]);
+```
+
+**Ejemplo de resultado** (`npm run query -- 7`). PRD005 y PRD011 empatan con 6 unidades. A PRD011
+no le suman la venta pendiente V012 ni la anulada V020:
+
+```json
+[
+  {
+    "_id": "PRD001",
+    "nombre": "Paracetamol 500mg x30",
+    "principio_activo": "Paracetamol",
+    "categoria": "Analgésico",
+    "presentacion": "Comprimidos x30",
+    "condicion_venta": "Venta libre",
+    "precio_unit": 2800,
+    "id_proveedor": "PRV001",
+    "activo": true,
+    "unidades_vendidas": 8
+  },
+  {
+    "_id": "PRD005",
+    "nombre": "Metformina 850mg x60",
+    "principio_activo": "Metformina",
+    "categoria": "Antidiabético",
+    "presentacion": "Comprimidos x60",
+    "condicion_venta": "Bajo receta",
+    "precio_unit": 5400,
+    "id_proveedor": "PRV003",
+    "activo": true,
+    "unidades_vendidas": 6
+  },
+  {
+    "_id": "PRD011",
+    "nombre": "Loratadina 10mg x10",
+    "principio_activo": "Loratadina",
+    "categoria": "Antihistamínico",
+    "presentacion": "Comprimidos x10",
+    "condicion_venta": "Venta libre",
+    "precio_unit": 2200,
+    "id_proveedor": "PRV001",
+    "activo": true,
+    "unidades_vendidas": 6
+  },
+  {
+    "_id": "PRD004",
+    "nombre": "Losartán 50mg x30",
+    "principio_activo": "Losartán",
+    "categoria": "Antihipertensivo",
+    "presentacion": "Comprimidos x30",
+    "condicion_venta": "Bajo receta",
+    "precio_unit": 6200,
+    "id_proveedor": "PRV002",
+    "activo": true,
+    "unidades_vendidas": 3
+  },
+  {
+    "_id": "PRD009",
+    "nombre": "Levotiroxina 100mcg x50",
+    "principio_activo": "Levotiroxina",
+    "categoria": "Hormona tiroidea",
+    "presentacion": "Comprimidos x50",
+    "condicion_venta": "Bajo receta",
+    "precio_unit": 5900,
+    "id_proveedor": "PRV003",
+    "activo": true,
+    "unidades_vendidas": 2
+  }
+]
+```
 
 ### Q08: Lotes con menos de 50 unidades, con producto, sucursal y proveedor
 
