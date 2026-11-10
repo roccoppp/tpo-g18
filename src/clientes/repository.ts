@@ -1,5 +1,5 @@
 import { MongoServerError, type Collection, type Db } from "mongodb";
-import neo4j, { type Driver, type Node } from "neo4j-driver";
+import neo4j, { type Date as FechaNeo4j, type Driver, type Node } from "neo4j-driver";
 import { fijarContador, formatearId, siguienteNumero } from "../lib/contadores.js";
 import { OperacionRechazada } from "../lib/errores.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
@@ -122,6 +122,31 @@ export class ClientesRepository {
     );
     if (records.length === 0) return null;
     return (records[0].get("clientes") as Node[]).map(clienteDesdeNodo);
+  }
+
+  /**
+   * Clientes, activos o dados de baja, que no tienen ninguna venta (en cualquier estado) con fecha
+   * desde `desde` en adelante, con la fecha de su última venta (null si nunca compraron), ordenados
+   * por id. Un único patrón en Neo4j: el `NOT EXISTS` sobre la relación DE_CLIENTE descarta a los
+   * que compraron en el período.
+   */
+  async sinVentasDesde(desde: Date): Promise<{ cliente: Cliente; ultimaVenta: Date | null }[]> {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (c:Cliente)
+       WHERE NOT EXISTS { (c)<-[:DE_CLIENTE]-(v:Venta) WHERE v.fecha >= $desde }
+       OPTIONAL MATCH (c)<-[:DE_CLIENTE]-(anterior:Venta)
+       RETURN c, max(anterior.fecha) AS ultimaVenta
+       ORDER BY c.id_cliente`,
+      { desde: neo4j.types.Date.fromStandardDateUTC(desde) },
+      { routing: neo4j.routing.READ },
+    );
+    return records.map((registro) => {
+      const ultimaVenta: FechaNeo4j<number> | null = registro.get("ultimaVenta");
+      return {
+        cliente: clienteDesdeNodo(registro.get("c")),
+        ultimaVenta: ultimaVenta === null ? null : ultimaVenta.toStandardDate(),
+      };
+    });
   }
 
   /** Rechaza la operación si algún cliente, activo o dado de baja, ya tiene ese DNI. */

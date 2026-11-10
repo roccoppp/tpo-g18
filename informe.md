@@ -295,7 +295,7 @@ Relaciones implementadas hasta ahora:
 (:Lote)-[:EN_SUCURSAL]->(:Sucursal)            q08
 (:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02, q05, q10
 (:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02, q05, q10
-(:Venta)-[:DE_CLIENTE]->(:Cliente)             q10
+(:Venta)-[:DE_CLIENTE]->(:Cliente)             q10, q12
 ```
 
 | Etiqueta    | Propiedades                                                                                          | Restricciones e índices                       | Origen                       |
@@ -1145,12 +1145,62 @@ anulada y no cuenta, y las ventas de octubre quedan fuera del período:
 ### Q12: Clientes sin ventas en el último año
 
 - **Tipo:** Lectura · **Parámetros:** ninguno (fecha del sistema) · **Módulo:** `src/queries/q12.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** Neo4j (copias de clientes y ventas).
+- **Resolución de relaciones:** patrón negado sobre la relación `(:Venta)-[:DE_CLIENTE]->(:Cliente)`,
+  resuelto en el servidor en un viaje. `NOT EXISTS { ... }` se queda con los clientes para los que no
+  existe ninguna venta con fecha dentro del último año. Un `OPTIONAL MATCH` agrega la fecha de su
+  última venta (`max`), que distingue a quien dejó de comprar de quien nunca compró (`null`). "Último
+  año" va desde la misma fecha de hace un año hasta hoy, calculado con la fecha del sistema
+  (`src/lib/fechas.ts`). Se cuentan las ventas en cualquier estado, porque las pendientes y las
+  anuladas también quedaron registradas, y se incluyen los clientes dados de baja. Como Neo4j no guarda
+  propiedades nulas, el repositorio devuelve `nro_afiliado: null` cuando el nodo no la tiene.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (c:Cliente)
+WHERE NOT EXISTS { (c)<-[:DE_CLIENTE]-(v:Venta) WHERE v.fecha >= $desde }
+OPTIONAL MATCH (c)<-[:DE_CLIENTE]-(anterior:Venta)
+RETURN c, max(anterior.fecha) AS ultimaVenta
+ORDER BY c.id_cliente
+```
+
+**Ejemplo de resultado** (`npm run query -- 12`, ejecutado el 10/11/2026, así que cuenta desde el
+10/11/2025). C004 compró por última vez el 18/09/2025. C008, dado de baja, nunca compró. C005 tiene
+una venta de junio de 2025, pero no aparece porque también compró en el último año:
+
+```json
+[
+  {
+    "_id": "C004",
+    "nombre": "Federico",
+    "apellido": "Navarro",
+    "dni": "33987654",
+    "email": "fede.n@gmail.com",
+    "telefono": "1156445566",
+    "ciudad": "Vicente López",
+    "provincia": "Buenos Aires",
+    "obra_social": "IOMA",
+    "nro_afiliado": "IO-450912",
+    "activo": true,
+    "ultima_venta": "2025-09-18T00:00:00.000Z"
+  },
+  {
+    "_id": "C008",
+    "nombre": "Hugo",
+    "apellido": "Mansilla",
+    "dni": "25678901",
+    "email": "hugo.m@gmail.com",
+    "telefono": "1178889900",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": false,
+    "ultima_venta": null
+  }
+]
+```
 
 ### Q13: ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica
 
