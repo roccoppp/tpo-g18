@@ -1,5 +1,5 @@
 import { MongoServerError, type Collection, type Db } from "mongodb";
-import type { Driver } from "neo4j-driver";
+import neo4j, { type Driver, type Node } from "neo4j-driver";
 import { fijarContador, formatearId, siguienteNumero } from "../lib/contadores.js";
 import { OperacionRechazada } from "../lib/errores.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
@@ -103,6 +103,27 @@ export class ClientesRepository {
     return despues;
   }
 
+  /**
+   * Clientes, activos o dados de baja, que tienen alguna venta atendida por un farmacéutico de la
+   * sucursal, esté activo o no, ordenados por id. Cuenta las ventas en cualquier estado. Un único
+   * patrón en Neo4j que recorre
+   *   (:Sucursal)<-[:TRABAJA_EN]-(:Farmaceutico)<-[:ATENDIDA_POR]-(:Venta)-[:DE_CLIENTE]->(:Cliente).
+   * El `OPTIONAL MATCH` distingue una sucursal sin clientes (lista vacía) de una que no existe (null).
+   */
+  async atendidosEnSucursal(idSucursal: string): Promise<Cliente[] | null> {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (s:Sucursal {id_sucursal: $idSucursal})
+       OPTIONAL MATCH (s)<-[:TRABAJA_EN]-(:Farmaceutico)<-[:ATENDIDA_POR]-(:Venta)-[:DE_CLIENTE]->(c:Cliente)
+       WITH s, c
+       ORDER BY c.id_cliente
+       RETURN s.id_sucursal AS idSucursal, collect(DISTINCT c) AS clientes`,
+      { idSucursal },
+      { routing: neo4j.routing.READ },
+    );
+    if (records.length === 0) return null;
+    return (records[0].get("clientes") as Node[]).map(clienteDesdeNodo);
+  }
+
   /** Rechaza la operación si algún cliente, activo o dado de baja, ya tiene ese DNI. */
   private async rechazarSiDniRegistrado(dni: string): Promise<void> {
     const existente = await this.coleccion.findOne({ dni });
@@ -165,6 +186,27 @@ function aNodo(cliente: Cliente) {
     obra_social: cliente.obra_social,
     nro_afiliado: cliente.nro_afiliado,
     activo: cliente.activo,
+  };
+}
+
+/**
+ * Convierte un nodo (:Cliente) al tipo del dominio. El nodo no guarda `nro_afiliado` cuando el
+ * cliente no tiene cobertura: vuelve como null.
+ */
+export function clienteDesdeNodo(nodo: Node): Cliente {
+  const c = nodo.properties;
+  return {
+    _id: c.id_cliente,
+    nombre: c.nombre,
+    apellido: c.apellido,
+    dni: c.dni,
+    email: c.email,
+    telefono: c.telefono,
+    ciudad: c.ciudad,
+    provincia: c.provincia,
+    obra_social: c.obra_social,
+    nro_afiliado: c.nro_afiliado ?? null,
+    activo: c.activo,
   };
 }
 

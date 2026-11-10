@@ -157,7 +157,7 @@ Esta decisión también fija qué **no** hace Neo4j:
 | farmacéuticos  | Neo4j                    | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                                   | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q02)                      | Implementado |
 | clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
 | recetas        | MongoDB                  | colección `recetas` (`_id` = id_receta)                                                             | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Implementado |
-| ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02 recorre sus relaciones | Implementado |
+| ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)` y `-[:DE_CLIENTE]->(:Cliente)` | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02, q05 y q10 recorren sus relaciones | Implementado |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
 
 > **TODO:** completar la tabla a medida que se implementen las entidades. Si una entidad queda en los
@@ -293,8 +293,9 @@ Relaciones implementadas hasta ahora:
 (:Producto)-[:PROVISTO_POR]->(:Proveedor)      q01, q08
 (:Lote)-[:DE_PRODUCTO]->(:Producto)            q08
 (:Lote)-[:EN_SUCURSAL]->(:Sucursal)            q08
-(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02
-(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02
+(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02, q05, q10
+(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02, q05, q10
+(:Venta)-[:DE_CLIENTE]->(:Cliente)             q10
 ```
 
 | Etiqueta    | Propiedades                                                                                          | Restricciones e índices                       | Origen                       |
@@ -307,11 +308,10 @@ Relaciones implementadas hasta ahora:
 | `Cliente`   | id_cliente, nombre, apellido, dni, email, telefono, ciudad, provincia, obra_social, nro_afiliado (ausente si no tiene cobertura), activo | `id_cliente` único | Copia de la colección `clientes` |
 | `Venta`     | id_venta, fecha (`date`), tipo, medio_pago, total, estado                                            | `id_venta` único; índice sobre `estado` (q02) | Copia de la cabecera de la colección `ventas`; los ítems solo están en MongoDB |
 
-Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`) no son propiedades de los nodos: son
+Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`, `id_cliente` de las ventas) no son propiedades de los nodos: son
 las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
 
-> **TODO:** agregar el diagrama y las relaciones que falten, como las que unen ventas y clientes
-> para q10 y q12.
+> **TODO:** agregar el diagrama.
 
 ---
 
@@ -1011,12 +1011,60 @@ menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
 ### Q10: Clientes atendidos en una sucursal (a través del farmacéutico de la venta, activo o no)
 
 - **Tipo:** Lectura · **Parámetros:** `id_sucursal` · **Módulo:** `src/queries/q10.ts`
-- **Motores:** TODO
-- **Resolución de relaciones:** TODO
+- **Motores:** Neo4j (sucursales, farmacéuticos y las copias de ventas y clientes).
+- **Resolución de relaciones:** recorrido de relaciones en el servidor, en un viaje. Desde la
+  sucursal, el patrón sigue tres relaciones:
+  `(:Sucursal)<-[:TRABAJA_EN]-(:Farmaceutico)<-[:ATENDIDA_POR]-(:Venta)-[:DE_CLIENTE]->(:Cliente)`.
+  La sucursal se llega a través del farmacéutico que registró la venta, como pide el enunciado. No se
+  filtra por `Farmaceutico.activo`, así que cuentan las ventas de farmacéuticos que ya no trabajan en
+  la red. Se cuentan las ventas en cualquier estado, porque una venta pendiente o anulada también es
+  una atención, y se incluyen los clientes dados de baja. `collect(DISTINCT c)` devuelve cada
+  cliente una sola vez. Con el `OPTIONAL MATCH`, una sucursal sin ventas (la droguería) devuelve una
+  lista vacía. Si la sucursal no existe, no hay fila y la consulta falla con un error.
 
-**Código:** TODO
+**Código:**
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (s:Sucursal {id_sucursal: $idSucursal})
+OPTIONAL MATCH (s)<-[:TRABAJA_EN]-(:Farmaceutico)<-[:ATENDIDA_POR]-(:Venta)-[:DE_CLIENTE]->(c:Cliente)
+WITH s, c
+ORDER BY c.id_cliente
+RETURN s.id_sucursal AS idSucursal, collect(DISTINCT c) AS clientes
+```
+
+**Ejemplo de resultado** (`npm run query -- 10 S002`). C004 aparece por la venta V001, que atendió
+F004, un farmacéutico que hoy está inactivo. C001 aparece por V010 (y por V020, anulada):
+
+```json
+[
+  {
+    "_id": "C001",
+    "nombre": "Lucía",
+    "apellido": "Fernández",
+    "dni": "31245678",
+    "email": "lucia.f@gmail.com",
+    "telefono": "1145112233",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-310045",
+    "activo": true
+  },
+  {
+    "_id": "C004",
+    "nombre": "Federico",
+    "apellido": "Navarro",
+    "dni": "33987654",
+    "email": "fede.n@gmail.com",
+    "telefono": "1156445566",
+    "ciudad": "Vicente López",
+    "provincia": "Buenos Aires",
+    "obra_social": "IOMA",
+    "nro_afiliado": "IO-450912",
+    "activo": true
+  }
+]
+```
 
 ### Q11: Ingresos totales por farmacéutico en el mes actual (solo 'Completada')
 

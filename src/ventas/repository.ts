@@ -10,8 +10,9 @@ import type { Venta } from "./types.js";
 
 // MongoDB es la fuente de verdad de las ventas: cada documento guarda la cabecera y sus ítems
 // embebidos. Neo4j guarda una copia de la cabecera como nodo (:Venta) para recorrer sus relaciones.
-// En el grafo, `id_farmaceutico` no es una propiedad: es la relación
-// (:Venta)-[:ATENDIDA_POR]->(:Farmaceutico). Los ítems solo están en MongoDB.
+// En el grafo, `id_farmaceutico` e `id_cliente` no son propiedades: son las relaciones
+// (:Venta)-[:ATENDIDA_POR]->(:Farmaceutico) y (:Venta)-[:DE_CLIENTE]->(:Cliente). Los ítems solo
+// están en MongoDB.
 
 /**
  * Acceso a ventas. Motores: MongoDB (colección `ventas`, fuente de verdad) y Neo4j (copia de la
@@ -114,9 +115,9 @@ export class VentasRepository {
   }
 
   /**
-   * Deja en el grafo exactamente estas ventas, cada una unida a su farmacéutico, en una única
-   * transacción. Si algún farmacéutico no existe, la transacción se aborta: ninguna venta queda sin
-   * su relación.
+   * Deja en el grafo exactamente estas ventas, cada una unida a su farmacéutico y a su cliente, en
+   * una única transacción. Si algún farmacéutico o cliente no existe, la transacción se aborta:
+   * ninguna venta queda sin sus relaciones. Los clientes tienen que estar copiados antes.
    */
   private async copiarAlGrafo(ventas: Venta[]): Promise<void> {
     await asegurarIdUnico(this.neo4j, "Venta", "id_venta");
@@ -132,23 +133,25 @@ export class VentasRepository {
          MERGE (v:Venta {id_venta: fila.nodo.id_venta})
          SET v = fila.nodo
          WITH v, fila
-         OPTIONAL MATCH (v)-[anterior:ATENDIDA_POR]->()
+         OPTIONAL MATCH (v)-[anterior:ATENDIDA_POR|DE_CLIENTE]->()
          DELETE anterior
-         WITH DISTINCT v, fila.id_farmaceutico AS idFarmaceutico
+         WITH DISTINCT v, fila.id_farmaceutico AS idFarmaceutico, fila.id_cliente AS idCliente
          MATCH (f:Farmaceutico {id_farmaceutico: idFarmaceutico})
-         CREATE (v)-[:ATENDIDA_POR]->(f)
+         MATCH (c:Cliente {id_cliente: idCliente})
+         CREATE (v)-[:ATENDIDA_POR]->(f), (v)-[:DE_CLIENTE]->(c)
          RETURN count(*) AS relacionados`,
         {
           ventas: ventas.map((venta) => ({
             nodo: aNodo(venta),
             id_farmaceutico: venta.id_farmaceutico,
+            id_cliente: venta.id_cliente,
           })),
         },
       );
       const relacionados: number = records[0].get("relacionados");
       if (relacionados !== ventas.length) {
         throw new Error(
-          `Neo4j: solo ${relacionados} de ${ventas.length} ventas encontraron su farmacéutico`,
+          `Neo4j: solo ${relacionados} de ${ventas.length} ventas encontraron su farmacéutico y su cliente`,
         );
       }
     });

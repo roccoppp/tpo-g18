@@ -39,7 +39,7 @@ Carga los CSV de `data/provistos/` y, si existen, los registros adicionales de `
 | farmaceuticos | Neo4j                  | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                |
 | recetas     | MongoDB                  | colección `recetas` (`_id` = id_receta)                                          |
 | clientes    | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente, índice único sobre `dni`); nodo `(:Cliente)` |
-| ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)` con la cabecera |
+| ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)` y `-[:DE_CLIENTE]->(:Cliente)` |
 
 MongoDB es la fuente de verdad de productos, lotes, clientes y ventas: la copia en Neo4j se escribe después. La colección `contadores` guarda el último número de id asignado a cada entidad, para las altas.
 
@@ -81,6 +81,7 @@ npm run query -- <número> [parámetros...]
 | 7   | Top 5 productos más vendidos en unidades (solo ventas 'Completada') | `src/queries/q07.ts` |
 | 8   | Lotes con menos de 50 unidades, con producto, sucursal y proveedor | `src/queries/q08.ts` |
 | 9   | Ventas 'Venta libre' con total menor a $5.000 (sin anuladas) | `src/queries/q09.ts` |
+| 10  | Clientes atendidos en una sucursal (a través del farmacéutico, activo o no): `npm run query -- 10 <id_sucursal>` | `src/queries/q10.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
 
 Uso de q13 (los campos van como `campo=valor`; un valor vacío, como `nro_afiliado=`, se toma como nulo):

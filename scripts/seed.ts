@@ -134,7 +134,8 @@ try {
   await repos.clientes.reemplazarTodos(clientes);
   console.log(`MongoDB + copia en Neo4j: ${clientes.length} clientes`);
 
-  // Los farmacéuticos se relacionan con las sucursales, y las ventas con los farmacéuticos.
+  // Los farmacéuticos se relacionan con las sucursales, y las ventas con los farmacéuticos y los
+  // clientes (cargados antes).
   await repos.farmaceuticos.reemplazarTodos(farmaceuticos);
   console.log(`Neo4j: ${farmaceuticos.length} farmacéuticos`);
 

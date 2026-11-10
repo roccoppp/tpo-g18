@@ -18,7 +18,7 @@ export interface ItemVenta {
  */
 export interface Venta {
   _id: string;
-  /** Referencia a un cliente. */
+  /** Referencia a un cliente. En el grafo es la relación DE_CLIENTE. */
   id_cliente: string;
   /** Referencia a un farmacéutico (nodo de Neo4j). En el grafo es la relación ATENDIDA_POR. */
   id_farmaceutico: string;
