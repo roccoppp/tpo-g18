@@ -25,12 +25,19 @@ export class ProductosRepository {
 
   /**
    * Reemplaza todo el catálogo (carga idempotente). Escribe primero en MongoDB, que es la fuente de
-   * verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye volviendo a cargar.
+   * verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye con `npm run sync`.
    */
   async reemplazarTodos(productos: Producto[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (productos.length > 0) await this.coleccion.insertMany(productos);
     await this.copiarAlGrafo(productos);
+  }
+
+  /** Reconstruye la copia de Neo4j a partir de MongoDB (`npm run sync`). Devuelve cuántos copió. */
+  async reconstruirCopia(): Promise<number> {
+    const productos = await this.coleccion.find().sort({ _id: 1 }).toArray();
+    await this.copiarAlGrafo(productos);
+    return productos.length;
   }
 
   /** Productos con `activo: true` y su proveedor, ordenados por id. Un único patrón en Neo4j. */

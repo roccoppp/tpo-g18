@@ -137,8 +137,9 @@ Esta decisión también fija qué **no** hace Neo4j:
 
 - **No participa en las transacciones de q14 y q15.** Ventas, recetas y stock se escriben en MongoDB
   (§2.2, punto 4). Las entidades cuya fuente de verdad es MongoDB y que además se recorren en el
-  grafo (hoy, productos y lotes) tienen en Neo4j una **copia**. La copia se escribe después de que
-  MongoDB confirma la escritura y, si queda desfasada, se reconstruye desde MongoDB (§3.3, punto 3).
+  grafo (hoy, productos, lotes y clientes) tienen en Neo4j una **copia**. La copia se escribe después de que
+  MongoDB confirma la escritura y, si queda desfasada, se reconstruye desde MongoDB con `npm run sync`
+  (§3.3, punto 3).
   Por ejemplo, q15 descuenta unidades de los lotes en MongoDB y después actualiza la copia, que es la
   que lee q08.
 - **Solo es la única copia de datos que ningún servicio escribe.** Proveedores y sucursales son datos
@@ -154,7 +155,7 @@ Esta decisión también fija qué **no** hace Neo4j:
 | productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: TODO. Neo4j: q01 y q08 recorren sus relaciones                                                         | Implementado |
 | sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
 | farmacéuticos  | TODO                     | TODO                                                                                                | TODO                                                                                                            | Pendiente    |
-| clientes       | TODO                     | TODO                                                                                                | TODO                                                                                                            | Pendiente    |
+| clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
 | recetas        | MongoDB                  | TODO                                                                                                | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Pendiente    |
 | ventas/detalle | MongoDB                  | TODO                                                                                                | Estructura jerárquica + transacción de q14/q15 (§2.2)                                                           | Pendiente    |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
@@ -211,9 +212,10 @@ src/
 3. **Escrituras coordinadas dentro del repositorio.** Si una entidad vive en los dos motores, el
    método del repositorio que la modifica escribe en ambos, siempre en el mismo orden. Primero va
    **MongoDB**, que es la fuente de verdad (§2.1), y después **Neo4j**, que es una copia derivada. Si
-   falla la escritura en Neo4j, la copia se reconstruye desde MongoDB. Nunca se reconstruye MongoDB a
-   partir de Neo4j. Así lo hacen hoy `ProductosRepository.reemplazarTodos` y
-   `LotesRepository.reemplazarTodos`.
+   falla la escritura en Neo4j, la copia se reconstruye desde MongoDB con `npm run sync`, que reescribe
+   las copias sin tocar MongoDB. Nunca se reconstruye MongoDB a partir de Neo4j. Así lo hacen hoy
+   `ProductosRepository.reemplazarTodos` y `LotesRepository.reemplazarTodos` en la carga, y
+   `ClientesRepository.alta` y `ClientesRepository.actualizar` en un servicio (q13).
 4. **Conversión en el borde.** Las diferencias de representación de cada motor se resuelven dentro
    del repositorio, y el resto de la aplicación no las ve. Por ejemplo:
    - En el grafo, las referencias no se guardan como propiedades: `producto.id_proveedor` es la
@@ -228,10 +230,9 @@ src/
 6. **Referencias entre dominios validadas por la aplicación.** Cuando una entidad referencia a otra
    que vive en otro motor (`producto.id_proveedor` apunta a un nodo de Neo4j), la aplicación valida la
    referencia antes de escribir. Hoy lo hace la carga de datos, que comprueba ids únicos y referencias
-   antes de tocar cualquier motor. Además, al copiar productos y lotes al grafo, el repositorio cuenta
-   las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
-   el grafo queda como estaba. Los servicios de escritura (q13 a q15) van a validar a través de los
-   repositorios.
+   antes de tocar cualquier motor. Además, al copiar productos y lotes al grafo, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
+   el grafo queda como estaba. Los servicios de escritura validan a través de los repositorios: q13
+   lo hace con el de clientes (§7), y q14 y q15 van a hacer lo mismo.
 
 ### 3.4 Costos de la decisión
 
@@ -270,7 +271,12 @@ src/
 
 ### 4.1 MongoDB
 
-> **TODO**
+| Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q13 |
+| `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
+
+> **TODO:** agregar las colecciones `productos`, `lotes`, `ventas` y `recetas`.
 
 ### 4.2 Neo4j
 
@@ -288,6 +294,7 @@ Relaciones implementadas hasta ahora:
 | `Sucursal`  | id_sucursal, nombre, tipo, direccion, ciudad, provincia, telefono, activo                            | `id_sucursal` único                           | Única copia                  |
 | `Producto`  | id_producto, nombre, principio_activo, categoria, presentacion, condicion_venta, precio_unit, activo | `id_producto` único                           | Copia de la colección `productos` |
 | `Lote`      | id_lote, nro_lote, unidades, vencimiento (`date`)                                                    | `id_lote` único; índice sobre `unidades` (q08) | Copia de la colección `lotes` |
+| `Cliente`   | id_cliente, nombre, apellido, dni, email, telefono, ciudad, provincia, obra_social, nro_afiliado (ausente si no tiene cobertura), activo | `id_cliente` único | Copia de la colección `clientes` |
 
 Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`) no son propiedades de los nodos: son
 las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
@@ -454,15 +461,187 @@ las relaciones. Cada restricción de unicidad crea además el índice que usan l
 
 ### Q13: ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica
 
-- **Tipo:** Servicio · **Parámetros:** TODO · **Módulo:** `src/queries/q13.ts`
-- **Motores:** TODO
-- **Validaciones:** TODO
+- **Tipo:** Servicio · **Parámetros:** la operación (`alta`, `modificar` o `baja`); para el alta,
+  los datos del cliente; para la modificación, `id_cliente` y los campos a cambiar; para la baja,
+  `id_cliente` · **Módulo:** `src/queries/q13.ts`
+- **Motores:** MongoDB (colección `clientes`, fuente de verdad, y colección `contadores`) y Neo4j
+  (copia en el nodo `(:Cliente)`). Cada operación escribe primero en MongoDB y después actualiza el
+  nodo. Si esa segunda escritura falla, el cliente queda guardado en MongoDB, el servicio lo informa
+  y `npm run sync` reconstruye la copia desde MongoDB (§3.3, punto 3).
+- **Validaciones:**
+  - **Alta:** campos obligatorios; DNI de 7 u 8 dígitos; email con formato válido; teléfono solo
+    con dígitos; obra social entre las admitidas por el enunciado; número de afiliado vacío si y
+    solo si la obra social es 'Sin cobertura'; **DNI único** entre todos los clientes, activos o
+    dados de baja.
+  - **Modificación:** solo email, teléfono, obra social y número de afiliado (nombre, apellido, DNI
+    y domicilio no se modifican). El cliente tiene que existir y estar activo, y se valida como queda
+    después del cambio: pasar a 'Sin cobertura' exige vaciar también el número de afiliado.
+  - **Baja:** el cliente tiene que existir y estar activo. La baja es lógica: `activo` pasa a
+    `false`, y el cliente y su DNI siguen registrados.
+- **Escrituras simultáneas:**
+  - **DNI único:** lo garantiza el índice único sobre `dni`. El servicio consulta antes para dar un
+    mensaje claro, pero si dos altas con el mismo DNI pasan esa consulta a la vez, el índice rechaza
+    la segunda. Con cinco altas simultáneas con el mismo DNI se registró una y se rechazaron cuatro.
+  - **Id del alta:** sale de un contador de la colección `contadores`, que se incrementa con `$inc`.
+    El incremento es atómico, así que dos altas simultáneas nunca reciben el mismo id (diez altas
+    simultáneas recibieron diez ids distintos). Un alta rechazada después de pedir su número deja un
+    hueco en la numeración. La carga deja el contador en el id más alto cargado.
+  - **Modificación y baja:** el `update` filtra por el documento completo que se leyó para validar.
+    Si otra escritura cambió el cliente en el medio, el filtro no lo encuentra y la operación se
+    rechaza en lugar de pisar ese cambio.
 
-**Código:** TODO
+**Uso** (un valor vacío, como `nro_afiliado=`, se toma como nulo):
 
-**Estado antes / después:** TODO
+```bash
+npm run query -- 13 alta nombre=Valentina apellido=Sosa dni=41222333 email=vale.sosa@gmail.com \
+  telefono=1145990011 ciudad="La Plata" provincia="Buenos Aires" obra_social=OSDE nro_afiliado=OS-412233
+npm run query -- 13 modificar C009 email=valentina.sosa@outlook.com telefono=1145990022 \
+  obra_social="Sin cobertura" nro_afiliado=
+npm run query -- 13 baja C009
+```
 
-**Caso de rechazo:** TODO (por ejemplo, alta con un DNI repetido)
+**Código:**
+
+```ts
+// ClientesRepository.alta: el id sale del contador; el índice único sobre dni es la garantía real
+await this.rechazarSiDniRegistrado(datos.dni);
+const cliente: Cliente = { _id: formatearId("C", await siguienteNumero(this.db, "clientes")), ...datos, activo: true };
+await this.coleccion.insertOne(cliente); // E11000 sobre dni → OperacionRechazada
+await this.copiar(cliente); // MERGE (c:Cliente {id_cliente: $nodo.id_cliente}) SET c = $nodo
+
+// ClientesRepository.actualizar: aplica el cambio solo si el cliente sigue como se validó
+const despues = await this.coleccion.findOneAndUpdate(antes, { $set: cambios }, { returnDocument: "after" });
+if (!despues) throw new OperacionRechazada(`el cliente ${antes._id} cambió mientras se procesaba la operación; ...`);
+await this.copiar(despues);
+```
+
+**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`. Antes del alta, C009
+no existe en ninguno de los dos motores. Después de cada operación se muestra también el nodo
+`(:Cliente)` de Neo4j, consultado con `cypher-shell`.
+
+Alta:
+
+```json
+{
+  "antes": null,
+  "despues": {
+    "_id": "C009",
+    "nombre": "Valentina",
+    "apellido": "Sosa",
+    "dni": "41222333",
+    "email": "vale.sosa@gmail.com",
+    "telefono": "1145990011",
+    "ciudad": "La Plata",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-412233",
+    "activo": true
+  }
+}
+```
+
+```text
+email, telefono, obra_social, nro_afiliado, activo
+"vale.sosa@gmail.com", "1145990011", "OSDE", "OS-412233", TRUE
+```
+
+Modificación de contacto y cobertura (pasa a 'Sin cobertura' y vacía el número de afiliado):
+
+```json
+{
+  "antes": {
+    "_id": "C009",
+    "nombre": "Valentina",
+    "apellido": "Sosa",
+    "dni": "41222333",
+    "email": "vale.sosa@gmail.com",
+    "telefono": "1145990011",
+    "ciudad": "La Plata",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-412233",
+    "activo": true
+  },
+  "despues": {
+    "_id": "C009",
+    "nombre": "Valentina",
+    "apellido": "Sosa",
+    "dni": "41222333",
+    "email": "valentina.sosa@outlook.com",
+    "telefono": "1145990022",
+    "ciudad": "La Plata",
+    "provincia": "Buenos Aires",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": true
+  }
+}
+```
+
+```text
+email, telefono, obra_social, nro_afiliado, activo
+"valentina.sosa@outlook.com", "1145990022", "Sin cobertura", NULL, TRUE
+```
+
+Baja lógica:
+
+```json
+{
+  "antes": {
+    "_id": "C009",
+    "nombre": "Valentina",
+    "apellido": "Sosa",
+    "dni": "41222333",
+    "email": "valentina.sosa@outlook.com",
+    "telefono": "1145990022",
+    "ciudad": "La Plata",
+    "provincia": "Buenos Aires",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": true
+  },
+  "despues": {
+    "_id": "C009",
+    "nombre": "Valentina",
+    "apellido": "Sosa",
+    "dni": "41222333",
+    "email": "valentina.sosa@outlook.com",
+    "telefono": "1145990022",
+    "ciudad": "La Plata",
+    "provincia": "Buenos Aires",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": false
+  }
+}
+```
+
+```text
+email, telefono, obra_social, nro_afiliado, activo
+"valentina.sosa@outlook.com", "1145990022", "Sin cobertura", NULL, FALSE
+```
+
+**Casos de rechazo.** Ninguno modifica datos, y el comando termina con código 1:
+
+```text
+$ npm run query -- 13 alta nombre=Pedro apellido=Ruiz dni=31245678 ... obra_social=PAMI nro_afiliado=PA-1
+Rechazado: ya existe un cliente con DNI 31245678: C001 (activo)
+
+$ npm run query -- 13 alta nombre=Hugo apellido=Mansilla dni=25678901 ... obra_social="Sin cobertura"
+Rechazado: ya existe un cliente con DNI 25678901: C008 (dado de baja)
+
+$ npm run query -- 13 alta nombre=Ana apellido=Paz dni=12AB email=ana-sin-arroba telefono=11-4444 ... obra_social=OSDE
+Rechazado: dni "12AB" tiene que tener 7 u 8 dígitos; email "ana-sin-arroba" no es válido; telefono "11-4444" tiene que tener solo dígitos (6 a 15); con obra social OSDE, falta nro_afiliado
+
+$ npm run query -- 13 modificar C001 obra_social="Sin cobertura"
+Rechazado: con 'Sin cobertura', nro_afiliado tiene que quedar vacío
+
+$ npm run query -- 13 modificar C001 dni=99999999
+Rechazado: "dni=99999999" no es válido: se espera campo=valor, sin repetir, con campo en email, telefono, obra_social, nro_afiliado
+
+$ npm run query -- 13 baja C009
+Rechazado: el cliente C009 está dado de baja
+```
 
 ### Q14: Registro de una venta 'Completada' con validaciones y actualización de receta
 

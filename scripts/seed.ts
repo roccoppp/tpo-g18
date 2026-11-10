@@ -1,7 +1,17 @@
 // Carga idempotente: borra y vuelve a cargar cada entidad a partir de
 // data/provistos y data/adicionales. Se puede ejecutar cuantas veces se quiera.
 
-import { booleano, entero, fecha, leerDataset, requerido, unoDe, type Fila } from "../src/lib/csv.js";
+import { OBRAS_SOCIALES, problemasDeCliente, type Cliente } from "../src/clientes/types.js";
+import {
+  booleano,
+  entero,
+  fecha,
+  leerDataset,
+  opcional,
+  requerido,
+  unoDe,
+  type Fila,
+} from "../src/lib/csv.js";
 import { connectMongo, connectNeo4j } from "../src/lib/db.js";
 import { crearRepositorios } from "../src/lib/repositorios.js";
 import type { Lote } from "../src/lotes/types.js";
@@ -14,11 +24,14 @@ const proveedores = leerDataset("proveedores").map(proveedorDesdeFila);
 const sucursales = leerDataset("sucursales").map(sucursalDesdeFila);
 const productos = leerDataset("productos").map(productoDesdeFila);
 const lotes = leerDataset("stock_lotes").map(loteDesdeFila);
+const clientes = leerDataset("clientes").map(clienteDesdeFila);
 
 const idsProveedor = idsUnicos("proveedores", proveedores.map((p) => p.id_proveedor));
 const idsSucursal = idsUnicos("sucursales", sucursales.map((s) => s.id_sucursal));
 const idsProducto = idsUnicos("productos", productos.map((p) => p._id));
 idsUnicos("stock_lotes", lotes.map((l) => l._id));
+idsUnicos("clientes", clientes.map((c) => c._id));
+idsUnicos("clientes", clientes.map((c) => c.dni), "dni");
 for (const producto of productos) {
   if (!idsProveedor.has(producto.id_proveedor)) {
     throw new Error(`Producto ${producto._id}: no existe el proveedor ${producto.id_proveedor}`);
@@ -33,6 +46,12 @@ for (const lote of lotes) {
   }
   if (lote.unidades < 0) {
     throw new Error(`Lote ${lote._id}: unidades negativas (${lote.unidades})`);
+  }
+}
+for (const cliente of clientes) {
+  const problemas = problemasDeCliente(cliente);
+  if (problemas.length > 0) {
+    throw new Error(`Cliente ${cliente._id}: ${problemas.join("; ")}`);
   }
 }
 
@@ -54,6 +73,9 @@ try {
 
   await repos.lotes.reemplazarTodos(lotes);
   console.log(`MongoDB + copia en Neo4j: ${lotes.length} lotes`);
+
+  await repos.clientes.reemplazarTodos(clientes);
+  console.log(`MongoDB + copia en Neo4j: ${clientes.length} clientes`);
 } finally {
   await neo4j.close();
   await mongo.close();
@@ -110,11 +132,27 @@ function loteDesdeFila(fila: Fila): Lote {
   };
 }
 
-function idsUnicos(entidad: string, ids: string[]): Set<string> {
+function clienteDesdeFila(fila: Fila): Cliente {
+  return {
+    _id: requerido(fila, "id_cliente"),
+    nombre: requerido(fila, "nombre"),
+    apellido: requerido(fila, "apellido"),
+    dni: requerido(fila, "dni"),
+    email: requerido(fila, "email"),
+    telefono: requerido(fila, "telefono"),
+    ciudad: requerido(fila, "ciudad"),
+    provincia: requerido(fila, "provincia"),
+    obra_social: unoDe(fila, "obra_social", OBRAS_SOCIALES),
+    nro_afiliado: opcional(fila, "nro_afiliado"),
+    activo: booleano(fila, "activo"),
+  };
+}
+
+function idsUnicos(entidad: string, ids: string[], campo = "ids"): Set<string> {
   const unicos = new Set(ids);
   if (unicos.size !== ids.length) {
     const repetidos = ids.filter((id, i) => ids.indexOf(id) !== i);
-    throw new Error(`${entidad}: ids repetidos ${[...new Set(repetidos)].join(", ")}`);
+    throw new Error(`${entidad}: ${campo} repetidos ${[...new Set(repetidos)].join(", ")}`);
   }
   return unicos;
 }

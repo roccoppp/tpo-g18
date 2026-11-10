@@ -30,12 +30,19 @@ export class LotesRepository {
 
   /**
    * Reemplaza todos los lotes (carga idempotente). Escribe primero en MongoDB, que es la fuente de
-   * verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye volviendo a cargar.
+   * verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye con `npm run sync`.
   */
   async reemplazarTodos(lotes: Lote[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (lotes.length > 0) await this.coleccion.insertMany(lotes);
     await this.copiarAlGrafo(lotes);
+  }
+
+  /** Reconstruye la copia de Neo4j a partir de MongoDB (`npm run sync`). Devuelve cuántos copió. */
+  async reconstruirCopia(): Promise<number> {
+    const lotes = await this.coleccion.find().sort({ _id: 1 }).toArray();
+    await this.copiarAlGrafo(lotes);
+    return lotes.length;
   }
 
   /**
