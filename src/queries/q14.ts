@@ -3,19 +3,22 @@ import type { FarmaceuticosRepository } from "../farmaceuticos/repository.js";
 import { OperacionRechazada } from "../lib/errores.js";
 import { hoy } from "../lib/fechas.js";
 import type { Repositorios } from "../lib/repositorios.js";
+import type { Lote } from "../lotes/types.js";
 import type { ProductosRepository } from "../productos/repository.js";
 import type { Producto } from "../productos/types.js";
 import type { RecetasRepository } from "../recetas/repository.js";
 import type { Receta } from "../recetas/types.js";
 import { MEDIOS_PAGO, type Venta } from "../ventas/types.js";
+import { descontarStockDeVenta } from "./q15.js";
 
 // Q14: registro de una venta 'Completada' (cabecera e ítems).
 //
-// Motores: MongoDB (ventas, recetas, clientes y productos, la fuente de verdad) y Neo4j (el
-// farmacéutico y su sucursal, que solo están en el grafo, y la copia de la venta). Todas las
-// validaciones se hacen antes de escribir. La venta y la dispensa de la receta se escriben en una
-// única transacción de MongoDB: o quedan las dos o ninguna. Después de confirmarla se escribe la
-// copia de la venta en Neo4j.
+// Motores: MongoDB (ventas, recetas, lotes, clientes y productos, la fuente de verdad) y Neo4j (el
+// farmacéutico y su sucursal, que solo están en el grafo, y las copias de la venta y los lotes).
+// Todas las validaciones se hacen antes de escribir. La venta, la dispensa de la receta y el
+// descuento de stock (q15) se escriben en una única transacción de MongoDB: si el stock no
+// alcanza, no queda la venta ni la receta modificada. Después de confirmarla se escriben las
+// copias en Neo4j.
 
 /**
  * Q14: registra una venta 'Completada' con fecha de hoy.
@@ -28,9 +31,12 @@ import { MEDIOS_PAGO, type Venta } from "../ventas/types.js";
  *
  * Cada ítem toma el precio de lista vigente del producto, y el total es la suma de los ítems. Si
  * hay receta, registra la dispensa según las reglas de negocio (ver RecetasRepository.dispensar).
+ * En la misma transacción descuenta el stock de la venta con q15 (FEFO, sin lotes vencidos): si
+ * no alcanza para algún ítem, rechaza la venta completa.
  *
  * @param datos cliente, farmacéutico, medio de pago, receta (null en una venta libre) e ítems.
- * @returns la venta registrada y, si tiene receta, la receta antes y después de la dispensa.
+ * @returns la venta registrada; si tiene receta, la receta antes y después de la dispensa; y cada
+ *   lote modificado, antes y después del descuento.
  */
 export async function q14RegistrarVenta(
   {
@@ -39,10 +45,11 @@ export async function q14RegistrarVenta(
     productos,
     recetas,
     ventas,
+    lotes,
     transacciones,
   }: Pick<
     Repositorios,
-    "clientes" | "farmaceuticos" | "productos" | "recetas" | "ventas" | "transacciones"
+    "clientes" | "farmaceuticos" | "productos" | "recetas" | "ventas" | "lotes" | "transacciones"
   >,
   datos: {
     id_cliente: string;
@@ -51,7 +58,11 @@ export async function q14RegistrarVenta(
     id_receta: string | null;
     items: { id_producto: string; cantidad: number }[];
   },
-): Promise<{ venta: Venta; receta: { antes: Receta; despues: Receta } | null }> {
+): Promise<{
+  venta: Venta;
+  receta: { antes: Receta; despues: Receta } | null;
+  lotes: { antes: Lote; despues: Lote }[];
+}> {
   const medioPago = medioDePago(datos.medio_pago);
   rechazarSiItemsInvalidos(datos.items);
   await rechazarSiClienteNoActivo(clientes, datos.id_cliente);
@@ -81,10 +92,14 @@ export async function q14RegistrarVenta(
       },
       session,
     );
-    if (!receta) return { venta, receta: null };
-    return { venta, receta: { antes: receta, despues: await recetas.dispensar(receta, fecha, session) } };
+    const dispensa = receta
+      ? { antes: receta, despues: await recetas.dispensar(receta, fecha, session) }
+      : null;
+    const stock = await descontarStockDeVenta({ ventas, farmaceuticos, lotes }, venta._id, session);
+    return { venta: stock.venta, receta: dispensa, lotes: stock.lotes };
   });
   await ventas.copiar(resultado.venta);
+  await lotes.copiarUnidades(resultado.lotes.map((lote) => lote.despues));
   return resultado;
 }
 
