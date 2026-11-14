@@ -152,17 +152,13 @@ Esta decisión también fija qué **no** hace Neo4j:
 | Entidad        | Motor                    | Estructura                                                                                          | Justificación                                                                                                   | Estado       |
 | -------------- | ------------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------ |
 | proveedores    | Neo4j                    | nodo `(:Proveedor)`                                                                                 | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q01, q08)                 | Implementado |
-| productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: TODO. Neo4j: q01 y q08 recorren sus relaciones                                                         | Implementado |
+| productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: q14 valida cada producto (existencia, estado activo y precio de lista vigente) junto con el resto de la venta, y q07 lo cruza con `$lookup`. Neo4j: q01 y q08 recorren sus relaciones | Implementado |
 | sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
 | farmacéuticos  | Neo4j                    | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                                   | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q02)                      | Implementado |
 | clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
 | recetas        | MongoDB                  | colección `recetas` (`_id` = id_receta)                                                             | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Implementado |
 | ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)` y `-[:DE_CLIENTE]->(:Cliente)` | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02, q05 y q10 recorren sus relaciones | Implementado |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
-
-> **TODO:** completar la tabla a medida que se implementen las entidades. Si una entidad queda en los
-> dos motores (en MongoDB como fuente de verdad y en Neo4j como copia para recorrer sus relaciones),
-> indicarlo en la columna Motor y explicar en §3 cómo se mantiene la consistencia.
 
 ---
 
@@ -216,7 +212,12 @@ src/
    las copias sin tocar MongoDB. Nunca se reconstruye MongoDB a partir de Neo4j. Así lo hacen hoy
    `ProductosRepository.reemplazarTodos`, `LotesRepository.reemplazarTodos` y
    `VentasRepository.reemplazarTodas` en la carga, y `ClientesRepository.alta` y
-   `ClientesRepository.actualizar` en un servicio (q13).
+   `ClientesRepository.actualizar` en un servicio (q13). En q14 y q15 la escritura en MongoDB forma
+   parte de una transacción que abarca varias entidades, así que el repositorio la separa en dos
+   métodos: uno escribe en MongoDB dentro de la transacción (`VentasRepository.registrar`,
+   `LotesRepository.descontarFefo`) y otro escribe la copia en Neo4j después de confirmarla
+   (`VentasRepository.copiar`, `LotesRepository.copiarUnidades`). El orden se mantiene: primero
+   MongoDB, después Neo4j (§8).
 4. **Conversión en el borde.** Las diferencias de representación de cada motor se resuelven dentro
    del repositorio, y el resto de la aplicación no las ve. Por ejemplo:
    - En el grafo, las referencias no se guardan como propiedades: `producto.id_proveedor` es la
@@ -234,7 +235,8 @@ src/
    antes de tocar cualquier motor. Además, al escribir en el grafo productos, lotes, farmacéuticos y
    ventas, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
    el grafo queda como estaba. Los servicios de escritura validan a través de los repositorios: q13
-   lo hace con el de clientes (§7), y q14 y q15 van a hacer lo mismo.
+   lo hace con el de clientes, y q14 y q15 con los de clientes, farmacéuticos, productos, recetas,
+   ventas y lotes (§7).
 
 ### 3.4 Costos de la decisión
 
@@ -275,15 +277,17 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11, q14 |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado`, `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) y `stock_descontado` (si q15 ya descontó su stock; la carga lo pone en `false`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11, q14, q15 |
 | `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06, q14 |
 | `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13, q14 |
+| `lotes` | `_id` (id_lote), `id_producto`, `id_sucursal`, `nro_lote`, `unidades` (nunca negativas), `vencimiento` | `{id_sucursal: 1, id_producto: 1, vencimiento: 1}` (q15: lotes de una sucursal y un producto, en orden de vencimiento) | q14, q15 |
 | `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`), q14 |
 | `contadores` | `_id` (nombre del contador: `clientes`, `ventas` o `detalle_ventas`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta de cliente), q14 (id de cada venta y de cada ítem) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
 
-> **TODO:** agregar la colección `lotes`.
+Las unidades de los lotes se descuentan en MongoDB, dentro de la transacción de q14 y q15 (§8); el
+nodo `(:Lote)` de Neo4j es una copia que se actualiza después de confirmarla.
 
 ### 4.2 Neo4j
 
@@ -1390,9 +1394,9 @@ Rechazado: el cliente C009 está dado de baja
 
 - **Tipo:** Servicio · **Parámetros:** `id_cliente`, `id_farmaceutico`, `medio_pago`, `id_receta`
   (opcional) y los ítems (`id_producto` y cantidad de cada uno) · **Módulo:** `src/queries/q14.ts`
-- **Motores:** MongoDB (colecciones `ventas`, `recetas`, `clientes`, `productos` y `contadores`) y
-  Neo4j (el farmacéutico y su sucursal, cuya única copia está en el grafo, y la copia de la venta en
-  el nodo `(:Venta)`).
+- **Motores:** MongoDB (colecciones `ventas`, `recetas`, `lotes`, `clientes`, `productos` y
+  `contadores`) y Neo4j (el farmacéutico y su sucursal, cuya única copia está en el grafo, y las
+  copias de la venta y de los lotes).
 - **Resolución de relaciones:** combinación en la aplicación. El cliente, los productos y la receta
   se leen de MongoDB por id; el farmacéutico y su sucursal se leen de Neo4j con el patrón
   `(:Farmaceutico {id_farmaceutico: $id})-[:TRABAJA_EN]->(:Sucursal)`. La venta guarda las
@@ -1412,21 +1416,19 @@ Rechazado: el cliente C009 está dado de baja
   hay receta y 'Venta libre' si no. Los ids de la venta y de cada ítem salen de los contadores
   `ventas` y `detalle_ventas` de la colección `contadores` (`$inc` atómico), que la carga deja en el
   id más alto cargado.
-- **Escritura:** la inserción de la venta y la dispensa de la receta se hacen en una única
-  transacción de MongoDB: o quedan las dos o ninguna. La dispensa aplica las reglas de negocio:
-  suma una dispensa; si quedan dispensas autorizadas, la próxima se fija 30 días después; si no, la
-  receta pasa a 'Completada' y `proxima_dispensa` queda vacía (las recetas simples y archivadas se
-  completan con su única dispensa). El `update` de la receta filtra además por el estado y las
-  dispensas leídas: si otra venta dispensó la misma receta en el medio, la operación se rechaza.
-  Después de confirmar la transacción se escribe la copia de la venta en Neo4j; si esa escritura
-  falla, la venta queda registrada en MongoDB, el servicio lo informa y `npm run sync` reconstruye
-  la copia (§3.3, punto 3).
+- **Escritura:** en una única transacción de MongoDB se inserta la venta, se registra la dispensa de
+  la receta y se descuenta el stock con q15 (FEFO, sin lotes vencidos). Si el stock no alcanza para
+  algún ítem, la transacción se descarta: no queda la venta ni la receta modificada (§8). La
+  dispensa aplica las reglas de negocio: suma una dispensa; si quedan dispensas autorizadas, la
+  próxima se fija 30 días después; si no, la receta pasa a 'Completada' y `proxima_dispensa` queda
+  vacía (las recetas simples y archivadas se completan con su única dispensa). Después de confirmar
+  la transacción se escriben las copias de la venta y de los lotes en Neo4j.
 
 **Uso** (cada ítem va como `id_producto:cantidad`):
 
 ```bash
 npm run query -- 14 C001 F001 Efectivo PRD001:2 PRD011:1
-npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 ```
 
 **Código:**
@@ -1440,13 +1442,18 @@ await rechazarSiFarmaceuticoNoHabilitado(farmaceuticos, datos.id_farmaceutico);
 const catalogo = await productosActivos(productos, datos.items);
 const receta = await recetaDeLaVenta(recetas, datos.id_receta, datos.id_cliente, catalogo);
 
-// la venta y la dispensa, en una única transacción de MongoDB
+// venta, dispensa y descuento de stock, en una única transacción de MongoDB
 const resultado = await transacciones.ejecutar(async (session) => {
-  const venta = await ventas.registrar({ ...cabecera, total, estado: "Completada", items }, session);
-  if (!receta) return { venta, receta: null };
-  return { venta, receta: { antes: receta, despues: await recetas.dispensar(receta, fecha, session) } };
+  const venta = await ventas.registrar({ ...cabecera, total, estado: "Completada", items, stock_descontado: false }, session);
+  const dispensa = receta
+    ? { antes: receta, despues: await recetas.dispensar(receta, fecha, session) }
+    : null;
+  const stock = await descontarStockDeVenta({ ventas, farmaceuticos, lotes }, venta._id, session); // q15
+  return { venta: stock.venta, receta: dispensa, lotes: stock.lotes };
 });
-await ventas.copiar(resultado.venta); // después de confirmar: MERGE (:Venta) + ATENDIDA_POR + DE_CLIENTE
+// después de confirmar, las copias en Neo4j
+await ventas.copiar(resultado.venta); // MERGE (:Venta) + ATENDIDA_POR + DE_CLIENTE
+await lotes.copiarUnidades(resultado.lotes.map((lote) => lote.despues));
 
 // RecetasRepository.dispensar: reglas de tratamiento prolongado
 const dispensasRealizadas = receta.dispensas_realizadas + 1;
@@ -1461,14 +1468,14 @@ await this.coleccion.updateOne(
 ```
 
 **Estado antes / después.** Salidas reales, ejecutadas en este orden después de `npm run seed`, el
-14/11/2026. Antes de la primera venta, la última venta cargada es V020 y el último ítem D027 (los
-contadores `ventas` y `detalle_ventas` quedan en 20 y 27); RC002 es una receta de tratamiento
-prolongado de C003 con 2 de 3 dispensas realizadas.
+14/11/2026. Antes de la primera venta, la última venta cargada es V020 y el último ítem D027; RC002
+es una receta de tratamiento prolongado de C003 con 2 de 3 dispensas realizadas, y F005 trabaja en
+S003, donde el único lote de PRD008 (L010) tiene 12 unidades.
 
-Venta con la última dispensa de RC002 (la receta pasa a 'Completada'):
+Venta con la última dispensa de RC002 (la receta pasa a 'Completada' y L010 baja de 12 a 11):
 
 ```text
-$ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+$ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 ```
 
 ```json
@@ -1476,7 +1483,7 @@ $ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
   "venta": {
     "_id": "V021",
     "id_cliente": "C003",
-    "id_farmaceutico": "F001",
+    "id_farmaceutico": "F005",
     "id_receta": "RC002",
     "fecha": "2026-11-14T00:00:00.000Z",
     "tipo": "Con receta",
@@ -1490,7 +1497,8 @@ $ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
         "cantidad": 1,
         "precio_unit": 7300
       }
-    ]
+    ],
+    "stock_descontado": true
   },
   "receta": {
     "antes": {
@@ -1517,23 +1525,44 @@ $ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
       "proxima_dispensa": null,
       "estado": "Completada"
     }
-  }
+  },
+  "lotes": [
+    {
+      "antes": {
+        "_id": "L010",
+        "id_producto": "PRD008",
+        "id_sucursal": "S003",
+        "nro_lote": "L-2507P",
+        "unidades": 12,
+        "vencimiento": "2027-01-31T00:00:00.000Z"
+      },
+      "despues": {
+        "_id": "L010",
+        "id_producto": "PRD008",
+        "id_sucursal": "S003",
+        "nro_lote": "L-2507P",
+        "unidades": 11,
+        "vencimiento": "2027-01-31T00:00:00.000Z"
+      }
+    }
+  ]
 }
 ```
 
-La copia en Neo4j, consultada con `cypher-shell`:
+Las copias en Neo4j, consultadas con `cypher-shell`:
 
 ```text
 v.id_venta, v.fecha, v.tipo, v.total, v.estado, f.id_farmaceutico, c.id_cliente
-"V021", 2026-11-14, "Con receta", 7300, "Completada", "F001", "C003"
+"V021", 2026-11-14, "Con receta", 7300, "Completada", "F005", "C003"
+l.id_lote, l.unidades
+"L010", 11
 ```
 
 Venta con una receta a la que le quedan dispensas (RC004, de C006, con 1 de 3 realizadas): la
-próxima dispensa se fija 30 días después de hoy. Extracto de la salida, con los campos de la venta
-y de la receta que cambian:
+próxima dispensa se fija 30 días después de hoy. Extracto de la salida, con los campos que cambian:
 
 ```text
-$ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1
+$ npm run query -- 14 C006 F005 Obra social receta=RC004 PRD008:1
 ```
 
 ```json
@@ -1541,8 +1570,8 @@ $ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1
   "venta": {
     "_id": "V022",
     "id_receta": "RC004",
-    "tipo": "Con receta",
-    "total": 7300
+    "total": 7300,
+    "stock_descontado": true
   },
   "receta": {
     "antes": {
@@ -1557,11 +1586,25 @@ $ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1
       "proxima_dispensa": "2026-12-14T00:00:00.000Z",
       "estado": "Vigente"
     }
-  }
+  },
+  "lotes": [
+    {
+      "antes": {
+        "_id": "L010",
+        "unidades": 11
+      },
+      "despues": {
+        "_id": "L010",
+        "unidades": 10
+      }
+    }
+  ]
 }
 ```
 
-**Casos de rechazo.** Ejecutados después de la venta V021. Cada uno termina con código 1:
+**Casos de rechazo.** Ejecutados a continuación. Cada uno termina con código 1. El último pasa todas
+las validaciones, pero en S003 solo hay 18 unidades vigentes de PRD001: la transacción se descarta
+completa.
 
 ```text
 $ npm run query -- 14 C001 F007 Efectivo PRD001:1
@@ -1570,36 +1613,267 @@ $ npm run query -- 14 C001 F001 Efectivo receta=RC006 PRD008:1
 Rechazado: la receta RC006 es de otro cliente (C007)
 $ npm run query -- 14 C001 F001 Efectivo PRD013:1
 Rechazado: el producto PRD013 está discontinuado
-$ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+$ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 Rechazado: la receta RC002 no está vigente (Completada)
+$ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1 PRD001:20
+Rechazado: stock vigente insuficiente de PRD001 en S003: se piden 20 unidades y hay 18
 ```
 
-Después de los rechazos no cambió ningún dato: la colección `ventas` sigue con 21 documentos (las
-20 cargadas y V021), los contadores siguen en `ventas: 21` y `detalle_ventas: 28`, y RC006 sigue
-'Vigente' con 0 dispensas realizadas.
+Después de los rechazos no cambió ningún dato: la colección `ventas` sigue con 22 documentos (las 20
+cargadas, V021 y V022), RC004 sigue con 2 dispensas realizadas y la próxima el 14/12/2026, y los
+lotes L003 (PRD001) y L010 (PRD008) siguen en 18 y 10 unidades. El último rechazo ya había pedido sus
+ids a los contadores (`ventas` quedó en 23 y `detalle_ventas` en 31): V023 y sus ítems quedan sin
+usar, igual que con un alta de cliente rechazada (Q13).
 
 ### Q15: Descuento masivo de stock de una venta (FEFO, sin lotes vencidos, todo o nada)
 
 - **Tipo:** Servicio · **Parámetros:** `id_venta` · **Módulo:** `src/queries/q15.ts`
-- **Motores:** TODO
-- **Validaciones:** TODO
+- **Motores:** MongoDB (colecciones `ventas` y `lotes`, fuente de verdad del stock) y Neo4j (la
+  sucursal del farmacéutico, cuya única copia está en el grafo, y la copia de los lotes en los nodos
+  `(:Lote)`, que lee q08).
+- **Resolución de relaciones:** combinación en la aplicación. La venta se lee de MongoDB con sus
+  ítems embebidos; la sucursal se obtiene recorriendo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`
+  desde el farmacéutico de la venta; los lotes se buscan en MongoDB por sucursal y producto, con el
+  índice `{id_sucursal: 1, id_producto: 1, vencimiento: 1}`.
+- **Validaciones:** la venta existe; está 'Completada' (una venta 'Pendiente' o 'Anulada' no
+  descuenta stock, §2.11 del enunciado); su stock no se descontó antes (campo `stock_descontado`);
+  y el stock vigente de la sucursal alcanza para cada ítem.
+- **Descuento:** para cada producto toma los lotes de la sucursal con unidades y vencimiento igual o
+  posterior a hoy, ordenados por vencimiento (FEFO), y reparte la cantidad entre ellos. Primero
+  calcula el descuento completo; si para algún producto no alcanza, rechaza la operación sin
+  modificar ningún lote. Recién entonces escribe: cada `update` usa `$inc` con un filtro que exige
+  unidades suficientes, y la venta se marca con `stock_descontado: true`. Todo dentro de una
+  transacción de MongoDB; después de confirmarla se actualizan las unidades de los nodos `(:Lote)`.
+- **Integración con q14:** q14 ejecuta la misma función (`descontarStockDeVenta`) dentro de su
+  transacción, así que una venta registrada con q14 ya tiene su stock descontado y q15 no la vuelve
+  a descontar (§8).
 
-**Código:** TODO
+**Uso:**
 
-**Estado antes / después:** TODO
+```bash
+npm run query -- 15 V003
+```
 
-**Caso de rechazo:** TODO (por ejemplo, stock vigente insuficiente para algún ítem)
+**Código:**
+
+```ts
+// q15: la parte transaccional (la misma que usa q14) y, después de confirmar, la copia en Neo4j
+const resultado = await transacciones.ejecutar((session) => descontarStockDeVenta(repos, idVenta, session));
+await lotes.copiarUnidades(resultado.lotes.map((lote) => lote.despues));
+
+// LotesRepository.descontarFefo: lotes vigentes ordenados por vencimiento
+const vigentes = await this.coleccion
+  .find({ id_sucursal: idSucursal, id_producto: { $in: productos }, vencimiento: { $gte: hoy }, unidades: { $gt: 0 } }, { session })
+  .sort({ vencimiento: 1, _id: 1 })
+  .toArray();
+const descuentos = planDeDescuento(vigentes, items, idSucursal); // si no alcanza: OperacionRechazada
+for (const { lote, unidades } of descuentos) {
+  const { matchedCount } = await this.coleccion.updateOne(
+    { _id: lote._id, unidades: { $gte: unidades } }, // el stock nunca queda negativo
+    { $inc: { unidades: -unidades } },
+    { session },
+  );
+  if (matchedCount === 0) throw new OperacionRechazada(`el lote ${lote._id} cambió mientras se descontaba el stock; ...`);
+}
+```
+
+**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`, el 14/11/2026. V003 es
+una venta 'Completada' de un ítem de PRD003 atendida por F001, que trabaja en S001. En S001 hay dos
+lotes de PRD003: L005 (40 unidades, vence el 30/11/2026) y L015 (100 unidades, vence el 30/06/2027).
+FEFO elige L005, el que vence antes:
+
+```text
+$ npm run query -- 15 V003
+```
+
+```json
+{
+  "venta": {
+    "_id": "V003",
+    "id_cliente": "C001",
+    "id_farmaceutico": "F001",
+    "id_receta": "RC001",
+    "fecha": "2026-09-10T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Obra social",
+    "total": 9800,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D004",
+        "id_producto": "PRD003",
+        "cantidad": 1,
+        "precio_unit": 9800
+      }
+    ],
+    "stock_descontado": true
+  },
+  "lotes": [
+    {
+      "antes": {
+        "_id": "L005",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2506A",
+        "unidades": 40,
+        "vencimiento": "2026-11-30T00:00:00.000Z"
+      },
+      "despues": {
+        "_id": "L005",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2506A",
+        "unidades": 39,
+        "vencimiento": "2026-11-30T00:00:00.000Z"
+      }
+    }
+  ]
+}
+```
+
+La copia en Neo4j:
+
+```text
+l.id_lote, l.unidades
+"L005", 39
+"L015", 100
+```
+
+Cuando un ítem no entra en un solo lote, el descuento se reparte en orden de vencimiento. Por
+ejemplo, una venta de 50 unidades de PRD003 en S001, registrada con q14 a continuación (extracto con
+la venta y los lotes): L005 se agota y las 11 unidades restantes salen de L015.
+
+```text
+$ npm run query -- 14 C006 F001 Débito receta=RC003 PRD003:50
+```
+
+```json
+{
+  "venta": {
+    "_id": "V021",
+    "id_receta": "RC003",
+    "total": 490000,
+    "stock_descontado": true
+  },
+  "lotes": [
+    {
+      "antes": {
+        "_id": "L005",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2506A",
+        "unidades": 39,
+        "vencimiento": "2026-11-30T00:00:00.000Z"
+      },
+      "despues": {
+        "_id": "L005",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2506A",
+        "unidades": 0,
+        "vencimiento": "2026-11-30T00:00:00.000Z"
+      }
+    },
+    {
+      "antes": {
+        "_id": "L015",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2601B",
+        "unidades": 100,
+        "vencimiento": "2027-06-30T00:00:00.000Z"
+      },
+      "despues": {
+        "_id": "L015",
+        "id_producto": "PRD003",
+        "id_sucursal": "S001",
+        "nro_lote": "L-2601B",
+        "unidades": 89,
+        "vencimiento": "2027-06-30T00:00:00.000Z"
+      }
+    }
+  ]
+}
+```
+
+```text
+l.id_lote, l.unidades
+"L005", 0
+"L015", 89
+```
+
+**Casos de rechazo.** Ejecutados después de la primera ejecución sobre V003. V010 vende una unidad
+de PRD010 en S002: el único lote de PRD010 en S002, L012, tiene 30 unidades pero venció el
+31/10/2026, así que no cuenta como stock vigente. En V001 no hay ningún lote de PRD007 en S002. En
+todos los casos ningún lote cambia.
+
+```text
+$ npm run query -- 15 V003
+Rechazado: el stock de la venta V003 ya se descontó
+$ npm run query -- 15 V012
+Rechazado: la venta V012 está 'Pendiente': solo una venta 'Completada' descuenta stock
+$ npm run query -- 15 V010
+Rechazado: stock vigente insuficiente de PRD010 en S002: se pide 1 unidad y hay 0
+$ npm run query -- 15 V001
+Rechazado: stock vigente insuficiente de PRD007 en S002: se pide 1 unidad y hay 0
+```
 
 ---
 
 ## 8. Consistencia en los servicios de escritura (q14 y q15)
 
-> **TODO:** explicar la estrategia elegida para que q14 y q15 funcionen juntos: si falla el descuento de
-> stock, no puede quedar una venta registrada ni una receta modificada (enunciado §4). Partir de §2.2,
-> punto 4 (transacción multi-documento en MongoDB sobre ventas, recetas y stock) y detallar el orden de
-> las operaciones, cómo se evita el stock negativo ante ventas concurrentes, y cómo se actualiza la
-> copia en Neo4j después de confirmar la transacción (por ejemplo, las unidades de los lotes, que lee
-> q08) y qué pasa si esa actualización falla (§3.3, punto 3).
+El enunciado pide que q14 y q15 funcionen juntos: si el descuento de stock falla, no puede quedar una
+venta registrada ni una receta modificada. Ventas, recetas y lotes tienen su fuente de verdad en
+MongoDB (§2.2, punto 4), así que la estrategia elegida es una **transacción multi-documento de
+MongoDB** que abarca las tres colecciones. No hace falta coordinar dos motores ni compensar
+escrituras ya confirmadas: o se confirma todo o no se confirma nada.
+
+**Orden de las operaciones en q14:**
+
+1. **Validaciones, sin escribir.** Cliente, farmacéutico y sucursal, productos y receta. Si alguna no
+   pasa, la venta se rechaza antes de empezar la transacción.
+2. **Ids.** El id de la venta y los de sus ítems se piden a los contadores con `$inc`, fuera de la
+   transacción: si la transacción se descarta, esos números quedan sin usar.
+3. **Transacción de MongoDB** (`TransaccionesMongo.ejecutar`, que usa `withTransaction` del driver):
+   1. se inserta la venta, con `stock_descontado: false`;
+   2. se registra la dispensa de la receta, si la hay;
+   3. se descuenta el stock con la parte transaccional de q15 (`descontarStockDeVenta`): lee la venta
+      dentro de la misma sesión, calcula el descuento FEFO completo, actualiza los lotes y marca la
+      venta con `stock_descontado: true`.
+
+   Si cualquiera de estos pasos lanza un error, por ejemplo `OperacionRechazada` por stock
+   insuficiente, la transacción se aborta y ningún cambio queda escrito. El rechazo integrado de
+   Q14 lo muestra: con 20 unidades pedidas y 18 vigentes, no quedó la venta, la receta no cambió y
+   los lotes tampoco.
+4. **Copias en Neo4j, después de confirmar.** Se escriben el nodo `(:Venta)` con sus relaciones y las
+   unidades de los nodos `(:Lote)`. Neo4j no participa en la transacción (§2.3). Si esta escritura
+   falla, la venta y el stock ya quedaron confirmados en MongoDB: el servicio lo informa y
+   `npm run sync` reconstruye las copias desde MongoDB (§3.3, punto 3). Hasta entonces, las consultas
+   que leen el grafo (por ejemplo q08) pueden mostrar datos desfasados.
+
+q15 ejecutada sola sigue el mismo esquema: abre su propia transacción para la parte que escribe en
+MongoDB y después actualiza la copia de los lotes.
+
+**Escrituras concurrentes.** Ninguna validación depende solo de una lectura previa:
+
+- **Stock.** Cada descuento filtra por `unidades >= lo que descuenta`. Además, si dos transacciones
+  modifican el mismo lote a la vez, MongoDB detecta el conflicto de escritura y aborta una de ellas;
+  `withTransaction` la reintenta desde el principio, así que vuelve a leer los lotes y recalcula el
+  descuento con el stock actualizado. Así el stock nunca queda negativo. En una prueba con tres ventas
+  simultáneas de 10 unidades de PRD001 en S003 (18 vigentes), se registró una y las otras dos se
+  rechazaron con "se piden 10 unidades y hay 8"; L003 terminó en 8 unidades. El resultado fue el
+  mismo en tres repeticiones.
+- **Receta.** La dispensa filtra por el estado y las dispensas realizadas que se leyeron al validar:
+  si otra venta dispensó la misma receta en el medio, la operación se rechaza.
+- **Doble descuento de una venta.** La marca `stock_descontado` se escribe en la misma transacción
+  que el descuento, con un filtro que exige que todavía esté en `false`. Una venta registrada con q14
+  ya queda marcada, y q15 la rechaza si se ejecuta sobre ella.
+
+**Alternativas descartadas.** Escribir primero la venta y descontar después el stock con
+compensaciones (borrar la venta y revertir la receta si el descuento falla) dejaría ventanas en las
+que otra consulta vería una venta sin su descuento de stock, y una falla entre los pasos dejaría
+datos inconsistentes. Como las tres entidades están en un mismo motor con transacciones ACID, la
+transacción es la opción más simple y con garantías más fuertes.
 
 ---
 
