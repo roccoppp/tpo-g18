@@ -1,5 +1,7 @@
 import neo4j, { type Driver, type Node } from "neo4j-driver";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
+import { sucursalDesdeNodo } from "../sucursales/repository.js";
+import type { Sucursal } from "../sucursales/types.js";
 import type { Farmaceutico } from "./types.js";
 
 // Cada farmacéutico es un nodo (:Farmaceutico). Neo4j es su única copia: ningún servicio escribe
@@ -62,6 +64,25 @@ export class FarmaceuticosRepository {
     return records.map((registro) =>
       farmaceuticoDesdeNodo(registro.get("f"), registro.get("idSucursal")),
     );
+  }
+
+  /**
+   * El farmacéutico con ese id, activo o no, junto con la sucursal donde trabaja (la que recorre
+   * TRABAJA_EN). `null` si no existe.
+   */
+  async buscarConSucursal(
+    idFarmaceutico: string,
+  ): Promise<{ farmaceutico: Farmaceutico; sucursal: Sucursal } | null> {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (f:Farmaceutico {id_farmaceutico: $idFarmaceutico})-[:TRABAJA_EN]->(s:Sucursal)
+       RETURN f, s`,
+      { idFarmaceutico },
+      { routing: neo4j.routing.READ },
+    );
+    const [registro] = records;
+    if (!registro) return null;
+    const sucursal = sucursalDesdeNodo(registro.get("s"));
+    return { farmaceutico: farmaceuticoDesdeNodo(registro.get("f"), sucursal.id_sucursal), sucursal };
   }
 
   /**

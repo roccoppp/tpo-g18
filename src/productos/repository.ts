@@ -40,6 +40,14 @@ export class ProductosRepository {
     return productos.length;
   }
 
+  /**
+   * Los productos con esos ids, activos o no, leídos de MongoDB (la fuente de verdad, que es la que
+   * valida q14). Los ids que no existen no aparecen.
+   */
+  async buscarPorIds(ids: string[]): Promise<Producto[]> {
+    return this.coleccion.find({ _id: { $in: ids } }).toArray();
+  }
+
   /** Productos con `activo: true` y su proveedor, ordenados por id. Un único patrón en Neo4j. */
   async activosConProveedor(): Promise<{ producto: Producto; proveedor: Proveedor }[]> {
     const { records } = await this.neo4j.executeQuery(

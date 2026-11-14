@@ -21,6 +21,11 @@ export class RecetasRepository {
     await this.coleccion.createIndex({ tipo: 1, estado: 1, proxima_dispensa: 1 });
   }
 
+  /** La receta con ese id, en cualquier estado. `null` si no existe. */
+  async buscarPorId(idReceta: string): Promise<Receta | null> {
+    return this.coleccion.findOne({ _id: idReceta });
+  }
+
   /** Recetas de un cliente, de la más antigua a la más reciente. */
   async deCliente(idCliente: string): Promise<Receta[]> {
     return this.coleccion
