@@ -1,5 +1,6 @@
-import type { Collection, Db } from "mongodb";
+import type { ClientSession, Collection, Db } from "mongodb";
 import neo4j, { type Date as FechaNeo4j, type Driver, type Node } from "neo4j-driver";
+import { OperacionRechazada } from "../lib/errores.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
 import { productoDesdeNodo } from "../productos/repository.js";
 import type { Producto } from "../productos/types.js";
@@ -35,7 +36,89 @@ export class LotesRepository {
   async reemplazarTodos(lotes: Lote[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (lotes.length > 0) await this.coleccion.insertMany(lotes);
+    await this.coleccion.createIndex({ id_sucursal: 1, id_producto: 1, vencimiento: 1 });
     await this.copiarAlGrafo(lotes);
+  }
+
+  /**
+   * Descuenta de los lotes de la sucursal las unidades de cada ítem con criterio FEFO (primero el
+   * lote que vence antes), dentro de la transacción de `session`. Solo usa lotes con unidades y no
+   * vencidos: un lote que vence hoy todavía se puede dispensar. Calcula el descuento completo antes
+   * de escribir: si para algún producto el stock vigente no alcanza, rechaza la operación sin
+   * modificar ningún lote.
+   *
+   * Cada `update` filtra además por `unidades >= lo que descuenta`, así que el stock nunca queda
+   * negativo: si otra venta descontó del mismo lote en el medio, no hay coincidencia y la operación
+   * se rechaza (y la transacción se descarta). La copia de Neo4j no se actualiza acá: se actualiza
+   * con `copiarUnidades` después de confirmar la transacción.
+   *
+   * @returns cada lote modificado, antes y después del descuento, en el orden en que se consumió.
+   */
+  async descontarFefo(
+    idSucursal: string,
+    items: { id_producto: string; cantidad: number }[],
+    hoy: Date,
+    session: ClientSession,
+  ): Promise<{ antes: Lote; despues: Lote }[]> {
+    const vigentes = await this.coleccion
+      .find(
+        {
+          id_sucursal: idSucursal,
+          id_producto: { $in: items.map((item) => item.id_producto) },
+          vencimiento: { $gte: hoy },
+          unidades: { $gt: 0 },
+        },
+        { session },
+      )
+      .sort({ vencimiento: 1, _id: 1 })
+      .toArray();
+    const descuentos = planDeDescuento(vigentes, items, idSucursal);
+    for (const { lote, unidades } of descuentos) {
+      const { matchedCount } = await this.coleccion.updateOne(
+        { _id: lote._id, unidades: { $gte: unidades } },
+        { $inc: { unidades: -unidades } },
+        { session },
+      );
+      if (matchedCount === 0) {
+        throw new OperacionRechazada(
+          `el lote ${lote._id} cambió mientras se descontaba el stock; volvé a intentarlo`,
+        );
+      }
+    }
+    return descuentos.map(({ lote, unidades }) => ({
+      antes: lote,
+      despues: { ...lote, unidades: lote.unidades - unidades },
+    }));
+  }
+
+  /**
+   * Actualiza las unidades de estos lotes en la copia de Neo4j, en una única transacción. Se llama
+   * después de confirmar el descuento en MongoDB: si falla, MongoDB ya quedó escrito y la copia se
+   * reconstruye con `npm run sync`.
+   */
+  async copiarUnidades(lotes: Lote[]): Promise<void> {
+    try {
+      await enTransaccion(this.neo4j, async (tx) => {
+        const { records } = await tx.run(
+          `UNWIND $lotes AS fila
+           MATCH (l:Lote {id_lote: fila.id_lote})
+           SET l.unidades = fila.unidades
+           RETURN count(l) AS actualizados`,
+          { lotes: lotes.map((lote) => ({ id_lote: lote._id, unidades: neo4j.int(lote.unidades) })) },
+        );
+        const actualizados: number = records[0].get("actualizados");
+        if (actualizados !== lotes.length) {
+          throw new Error(`Neo4j: solo se encontraron ${actualizados} de ${lotes.length} lotes`);
+        }
+      });
+    } catch (error) {
+      throw new Error(
+        `El stock de los lotes ${lotes.map((lote) => lote._id).join(", ")} quedó descontado en ` +
+          "MongoDB, pero no se pudo actualizar su copia en Neo4j. Ejecutá `npm run sync` para " +
+          "reconstruirla desde MongoDB.",
+        { cause: error },
+      );
+    }
   }
 
   /** Reconstruye la copia de Neo4j a partir de MongoDB (`npm run sync`). Devuelve cuántos copió. */
@@ -140,4 +223,39 @@ function loteDesdeNodo(nodo: Node, idProducto: string, idSucursal: string): Lote
     unidades: l.unidades,
     vencimiento: (l.vencimiento as FechaNeo4j<number>).toStandardDate(),
   };
+}
+
+/**
+ * Reparte la cantidad pedida de cada producto entre sus lotes vigentes, en el orden recibido (el
+ * de vencimiento). Si un producto aparece en varios ítems, suma sus cantidades. Si el stock
+ * vigente de algún producto no alcanza, rechaza la operación.
+ */
+function planDeDescuento(
+  vigentes: Lote[],
+  items: { id_producto: string; cantidad: number }[],
+  idSucursal: string,
+): { lote: Lote; unidades: number }[] {
+  const pedidos = new Map<string, number>();
+  for (const { id_producto, cantidad } of items) {
+    pedidos.set(id_producto, (pedidos.get(id_producto) ?? 0) + cantidad);
+  }
+  const plan: { lote: Lote; unidades: number }[] = [];
+  for (const [idProducto, cantidad] of pedidos) {
+    const lotes = vigentes.filter((lote) => lote.id_producto === idProducto);
+    const disponible = lotes.reduce((suma, lote) => suma + lote.unidades, 0);
+    if (disponible < cantidad) {
+      throw new OperacionRechazada(
+        `stock vigente insuficiente de ${idProducto} en ${idSucursal}: ` +
+          `se piden ${cantidad} unidades y hay ${disponible}`,
+      );
+    }
+    let restante = cantidad;
+    for (const lote of lotes) {
+      if (restante === 0) break;
+      const unidades = Math.min(restante, lote.unidades);
+      plan.push({ lote, unidades });
+      restante -= unidades;
+    }
+  }
+  return plan;
 }
