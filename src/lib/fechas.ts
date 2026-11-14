@@ -9,6 +9,11 @@ export function hoy(): Date {
   return new Date(Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate()));
 }
 
+/** La fecha `dias` días después de `fecha`. */
+export function sumarDias(fecha: Date, dias: number): Date {
+  return new Date(Date.UTC(fecha.getUTCFullYear(), fecha.getUTCMonth(), fecha.getUTCDate() + dias));
+}
+
 /** La fecha `dias` días antes de `fecha`. */
 export function restarDias(fecha: Date, dias: number): Date {
   return new Date(Date.UTC(fecha.getUTCFullYear(), fecha.getUTCMonth(), fecha.getUTCDate() - dias));

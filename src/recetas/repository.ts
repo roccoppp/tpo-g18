@@ -1,6 +1,11 @@
-import type { Collection, Db } from "mongodb";
+import type { ClientSession, Collection, Db } from "mongodb";
 import type { Cliente } from "../clientes/types.js";
+import { OperacionRechazada } from "../lib/errores.js";
+import { sumarDias } from "../lib/fechas.js";
 import type { Receta } from "./types.js";
+
+/** Días entre dispensas de una receta de tratamiento prolongado (enunciado §2.11). */
+const DIAS_ENTRE_DISPENSAS = 30;
 
 /** Acceso a recetas. Motor: MongoDB, colección `recetas`. */
 export class RecetasRepository {
@@ -24,6 +29,36 @@ export class RecetasRepository {
   /** La receta con ese id, en cualquier estado. `null` si no existe. */
   async buscarPorId(idReceta: string): Promise<Receta | null> {
     return this.coleccion.findOne({ _id: idReceta });
+  }
+
+  /**
+   * Registra una dispensa de la receta en `fecha`, dentro de la transacción de `session`, y devuelve
+   * la receta actualizada. Reglas de negocio (§2.11): suma una dispensa; si quedan dispensas
+   * autorizadas, la próxima se fija 30 días después; si no, la receta pasa a 'Completada' y la
+   * próxima dispensa queda vacía. Las recetas simples y archivadas se completan con su única
+   * dispensa. Quien llama ya validó que la receta está 'Vigente'.
+   *
+   * El filtro incluye el estado y las dispensas leídas: si otra venta dispensó la misma receta
+   * entre la lectura y esta escritura, no hay coincidencia y la operación se rechaza.
+   */
+  async dispensar(receta: Receta, fecha: Date, session: ClientSession): Promise<Receta> {
+    const dispensasRealizadas = receta.dispensas_realizadas + 1;
+    const completa =
+      receta.tipo !== "Tratamiento prolongado" || dispensasRealizadas >= receta.dispensas_autorizadas;
+    const cambios = {
+      dispensas_realizadas: dispensasRealizadas,
+      proxima_dispensa: completa ? null : sumarDias(fecha, DIAS_ENTRE_DISPENSAS),
+      estado: completa ? ("Completada" as const) : ("Vigente" as const),
+    };
+    const { matchedCount } = await this.coleccion.updateOne(
+      { _id: receta._id, estado: "Vigente", dispensas_realizadas: receta.dispensas_realizadas },
+      { $set: cambios },
+      { session },
+    );
+    if (matchedCount === 0) {
+      throw new OperacionRechazada(`la receta ${receta._id} cambió mientras se registraba la venta`);
+    }
+    return { ...receta, ...cambios };
   }
 
   /** Recetas de un cliente, de la más antigua a la más reciente. */
