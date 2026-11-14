@@ -275,11 +275,11 @@ src/
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11 |
-| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06 |
-| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13 |
-| `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`) |
-| `contadores` | `_id` (nombre de la entidad, por ejemplo `clientes`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta) |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado` e `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11, q14 |
+| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06, q14 |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13, q14 |
+| `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`), q14 |
+| `contadores` | `_id` (nombre del contador: `clientes`, `ventas` o `detalle_ventas`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta de cliente), q14 (id de cada venta y de cada ítem) |
 
 Los ítems de cada venta van embebidos porque se leen y se escriben junto con su cabecera (§2.2, punto 1).
 
@@ -1388,17 +1388,195 @@ Rechazado: el cliente C009 está dado de baja
 
 ### Q14: Registro de una venta 'Completada' con validaciones y actualización de receta
 
-- **Tipo:** Servicio · **Parámetros:** TODO · **Módulo:** `src/queries/q14.ts`
-- **Motores:** TODO
-- **Validaciones:** cliente existente y activo; farmacéutico existente, activo y de una sucursal
-  'Farmacia'; productos existentes y activos; para productos bajo receta, receta existente, vigente
-  y del mismo cliente. El total se calcula a partir de los ítems.
+- **Tipo:** Servicio · **Parámetros:** `id_cliente`, `id_farmaceutico`, `medio_pago`, `id_receta`
+  (opcional) y los ítems (`id_producto` y cantidad de cada uno) · **Módulo:** `src/queries/q14.ts`
+- **Motores:** MongoDB (colecciones `ventas`, `recetas`, `clientes`, `productos` y `contadores`) y
+  Neo4j (el farmacéutico y su sucursal, cuya única copia está en el grafo, y la copia de la venta en
+  el nodo `(:Venta)`).
+- **Resolución de relaciones:** combinación en la aplicación. El cliente, los productos y la receta
+  se leen de MongoDB por id; el farmacéutico y su sucursal se leen de Neo4j con el patrón
+  `(:Farmaceutico {id_farmaceutico: $id})-[:TRABAJA_EN]->(:Sucursal)`. La venta guarda las
+  referencias por id y los ítems embebidos.
+- **Validaciones** (todas antes de escribir; si una no pasa, lanza `OperacionRechazada` y no se
+  modifica ningún dato):
+  - cliente existente y activo;
+  - farmacéutico existente, activo y de una sucursal de tipo 'Farmacia';
+  - medio de pago entre los admitidos por el enunciado;
+  - al menos un ítem, sin productos repetidos y con cantidades enteras positivas;
+  - productos existentes y activos;
+  - si algún producto es 'Bajo receta' o 'Bajo receta archivada': receta existente, 'Vigente' y del
+    mismo cliente. Si se indica una receta pero ningún producto la requiere, la venta se rechaza,
+    para no consumir una dispensa sin uso.
+- **Armado de la venta:** fecha de hoy (fecha del sistema); cada ítem toma el precio de lista vigente
+  del producto; el total es la suma de cantidad × precio de los ítems; el tipo es 'Con receta' si
+  hay receta y 'Venta libre' si no. Los ids de la venta y de cada ítem salen de los contadores
+  `ventas` y `detalle_ventas` de la colección `contadores` (`$inc` atómico), que la carga deja en el
+  id más alto cargado.
+- **Escritura:** la inserción de la venta y la dispensa de la receta se hacen en una única
+  transacción de MongoDB: o quedan las dos o ninguna. La dispensa aplica las reglas de negocio:
+  suma una dispensa; si quedan dispensas autorizadas, la próxima se fija 30 días después; si no, la
+  receta pasa a 'Completada' y `proxima_dispensa` queda vacía (las recetas simples y archivadas se
+  completan con su única dispensa). El `update` de la receta filtra además por el estado y las
+  dispensas leídas: si otra venta dispensó la misma receta en el medio, la operación se rechaza.
+  Después de confirmar la transacción se escribe la copia de la venta en Neo4j; si esa escritura
+  falla, la venta queda registrada en MongoDB, el servicio lo informa y `npm run sync` reconstruye
+  la copia (§3.3, punto 3).
 
-**Código:** TODO
+**Uso** (cada ítem va como `id_producto:cantidad`):
 
-**Estado antes / después:** TODO
+```bash
+npm run query -- 14 C001 F001 Efectivo PRD001:2 PRD011:1
+npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+```
 
-**Caso de rechazo:** TODO
+**Código:**
+
+```ts
+// q14RegistrarVenta: primero todas las validaciones, sin escribir nada
+const medioPago = medioDePago(datos.medio_pago);
+rechazarSiItemsInvalidos(datos.items);
+await rechazarSiClienteNoActivo(clientes, datos.id_cliente);
+await rechazarSiFarmaceuticoNoHabilitado(farmaceuticos, datos.id_farmaceutico);
+const catalogo = await productosActivos(productos, datos.items);
+const receta = await recetaDeLaVenta(recetas, datos.id_receta, datos.id_cliente, catalogo);
+
+// la venta y la dispensa, en una única transacción de MongoDB
+const resultado = await transacciones.ejecutar(async (session) => {
+  const venta = await ventas.registrar({ ...cabecera, total, estado: "Completada", items }, session);
+  if (!receta) return { venta, receta: null };
+  return { venta, receta: { antes: receta, despues: await recetas.dispensar(receta, fecha, session) } };
+});
+await ventas.copiar(resultado.venta); // después de confirmar: MERGE (:Venta) + ATENDIDA_POR + DE_CLIENTE
+
+// RecetasRepository.dispensar: reglas de tratamiento prolongado
+const dispensasRealizadas = receta.dispensas_realizadas + 1;
+const completa = receta.tipo !== "Tratamiento prolongado" || dispensasRealizadas >= receta.dispensas_autorizadas;
+await this.coleccion.updateOne(
+  { _id: receta._id, estado: "Vigente", dispensas_realizadas: receta.dispensas_realizadas },
+  { $set: { dispensas_realizadas: dispensasRealizadas,
+            proxima_dispensa: completa ? null : sumarDias(fecha, 30),
+            estado: completa ? "Completada" : "Vigente" } },
+  { session },
+);
+```
+
+**Estado antes / después.** Salidas reales, ejecutadas en este orden después de `npm run seed`, el
+14/11/2026. Antes de la primera venta, la última venta cargada es V020 y el último ítem D027 (los
+contadores `ventas` y `detalle_ventas` quedan en 20 y 27); RC002 es una receta de tratamiento
+prolongado de C003 con 2 de 3 dispensas realizadas.
+
+Venta con la última dispensa de RC002 (la receta pasa a 'Completada'):
+
+```text
+$ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+```
+
+```json
+{
+  "venta": {
+    "_id": "V021",
+    "id_cliente": "C003",
+    "id_farmaceutico": "F001",
+    "id_receta": "RC002",
+    "fecha": "2026-11-14T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Débito",
+    "total": 7300,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D028",
+        "id_producto": "PRD008",
+        "cantidad": 1,
+        "precio_unit": 7300
+      }
+    ]
+  },
+  "receta": {
+    "antes": {
+      "_id": "RC002",
+      "id_cliente": "C003",
+      "medico": "Dra. Silvia Montenegro",
+      "matricula_medico": "MP-39877",
+      "fecha_emision": "2026-07-15T00:00:00.000Z",
+      "tipo": "Tratamiento prolongado",
+      "dispensas_autorizadas": 3,
+      "dispensas_realizadas": 2,
+      "proxima_dispensa": "2026-09-15T00:00:00.000Z",
+      "estado": "Vigente"
+    },
+    "despues": {
+      "_id": "RC002",
+      "id_cliente": "C003",
+      "medico": "Dra. Silvia Montenegro",
+      "matricula_medico": "MP-39877",
+      "fecha_emision": "2026-07-15T00:00:00.000Z",
+      "tipo": "Tratamiento prolongado",
+      "dispensas_autorizadas": 3,
+      "dispensas_realizadas": 3,
+      "proxima_dispensa": null,
+      "estado": "Completada"
+    }
+  }
+}
+```
+
+La copia en Neo4j, consultada con `cypher-shell`:
+
+```text
+v.id_venta, v.fecha, v.tipo, v.total, v.estado, f.id_farmaceutico, c.id_cliente
+"V021", 2026-11-14, "Con receta", 7300, "Completada", "F001", "C003"
+```
+
+Venta con una receta a la que le quedan dispensas (RC004, de C006, con 1 de 3 realizadas): la
+próxima dispensa se fija 30 días después de hoy. Extracto de la salida, con los campos de la venta
+y de la receta que cambian:
+
+```text
+$ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1
+```
+
+```json
+{
+  "venta": {
+    "_id": "V022",
+    "id_receta": "RC004",
+    "tipo": "Con receta",
+    "total": 7300
+  },
+  "receta": {
+    "antes": {
+      "dispensas_autorizadas": 3,
+      "dispensas_realizadas": 1,
+      "proxima_dispensa": "2026-10-20T00:00:00.000Z",
+      "estado": "Vigente"
+    },
+    "despues": {
+      "dispensas_autorizadas": 3,
+      "dispensas_realizadas": 2,
+      "proxima_dispensa": "2026-12-14T00:00:00.000Z",
+      "estado": "Vigente"
+    }
+  }
+}
+```
+
+**Casos de rechazo.** Ejecutados después de la venta V021. Cada uno termina con código 1:
+
+```text
+$ npm run query -- 14 C001 F007 Efectivo PRD001:1
+Rechazado: el farmacéutico F007 trabaja en S005 (Droguería), y solo se registran ventas en sucursales de tipo 'Farmacia'
+$ npm run query -- 14 C001 F001 Efectivo receta=RC006 PRD008:1
+Rechazado: la receta RC006 es de otro cliente (C007)
+$ npm run query -- 14 C001 F001 Efectivo PRD013:1
+Rechazado: el producto PRD013 está discontinuado
+$ npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+Rechazado: la receta RC002 no está vigente (Completada)
+```
+
+Después de los rechazos no cambió ningún dato: la colección `ventas` sigue con 21 documentos (las
+20 cargadas y V021), los contadores siguen en `ventas: 21` y `detalle_ventas: 28`, y RC006 sigue
+'Vigente' con 0 dispensas realizadas.
 
 ### Q15: Descuento masivo de stock de una venta (FEFO, sin lotes vencidos, todo o nada)
 
