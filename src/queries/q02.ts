@@ -16,7 +16,7 @@ import type { Venta } from "../ventas/types.js";
  * por id.
  */
 export async function q02VentasPendientesConFarmaceutico(ventas: VentasRepository): Promise<
-  (Omit<Venta, "id_cliente" | "id_receta" | "items"> & {
+  (Omit<Venta, "id_cliente" | "id_receta" | "items" | "stock_descontado"> & {
     farmaceutico: Farmaceutico;
     sucursal: Sucursal;
   })[]

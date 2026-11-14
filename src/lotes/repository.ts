@@ -244,9 +244,9 @@ function planDeDescuento(
     const lotes = vigentes.filter((lote) => lote.id_producto === idProducto);
     const disponible = lotes.reduce((suma, lote) => suma + lote.unidades, 0);
     if (disponible < cantidad) {
+      const pedido = cantidad === 1 ? "se pide 1 unidad" : `se piden ${cantidad} unidades`;
       throw new OperacionRechazada(
-        `stock vigente insuficiente de ${idProducto} en ${idSucursal}: ` +
-          `se piden ${cantidad} unidades y hay ${disponible}`,
+        `stock vigente insuficiente de ${idProducto} en ${idSucursal}: ${pedido} y hay ${disponible}`,
       );
     }
     let restante = cantidad;

@@ -77,6 +77,7 @@ export async function q14RegistrarVenta(
         total: items.reduce((suma, item) => suma + item.cantidad * item.precio_unit, 0),
         estado: "Completada",
         items,
+        stock_descontado: false,
       },
       session,
     );

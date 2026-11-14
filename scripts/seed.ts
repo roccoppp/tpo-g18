@@ -257,6 +257,7 @@ function ventaDesdeFila(fila: Fila): Venta {
     total: entero(fila, "total"),
     estado: unoDe(fila, "estado", ESTADOS_VENTA),
     items: [],
+    stock_descontado: false,
   };
 }
 

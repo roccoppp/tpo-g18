@@ -9,6 +9,7 @@ import { farmaceuticoDesdeNodo } from "../farmaceuticos/repository.js";
 import type { Farmaceutico } from "../farmaceuticos/types.js";
 import type { Producto } from "../productos/types.js";
 import { fijarContador, formatearId, siguienteNumero } from "../lib/contadores.js";
+import { OperacionRechazada } from "../lib/errores.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
 import { sucursalDesdeNodo } from "../sucursales/repository.js";
 import type { Sucursal } from "../sucursales/types.js";
@@ -109,6 +110,30 @@ export class VentasRepository {
     return ventas.length;
   }
 
+  /**
+   * La venta con ese id, con sus ítems. `null` si no existe. Con `session`, la lee dentro de esa
+   * transacción, así que ve también una venta insertada en ella y todavía no confirmada.
+   */
+  async buscarPorId(idVenta: string, session?: ClientSession): Promise<Venta | null> {
+    return this.coleccion.findOne({ _id: idVenta }, { session });
+  }
+
+  /**
+   * Marca que ya se descontó el stock de la venta, dentro de la transacción de `session`. El filtro
+   * exige que todavía no estuviera marcada: si otra operación descontó el stock de la misma venta
+   * en el medio, no hay coincidencia y la operación se rechaza.
+   */
+  async marcarStockDescontado(idVenta: string, session: ClientSession): Promise<void> {
+    const { matchedCount } = await this.coleccion.updateOne(
+      { _id: idVenta, stock_descontado: false },
+      { $set: { stock_descontado: true } },
+      { session },
+    );
+    if (matchedCount === 0) {
+      throw new OperacionRechazada(`el stock de la venta ${idVenta} ya se descontó`);
+    }
+  }
+
   /** Ventas de un cliente con sus ítems, de la más antigua a la más reciente. */
   async deCliente(idCliente: string): Promise<Venta[]> {
     return this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
@@ -179,7 +204,7 @@ export class VentasRepository {
    */
   async conFarmaceuticoEnEstado(estado: Venta["estado"]): Promise<
     {
-      venta: Omit<Venta, "id_cliente" | "id_receta" | "items">;
+      venta: Omit<Venta, "id_cliente" | "id_receta" | "items" | "stock_descontado">;
       farmaceutico: Farmaceutico;
       sucursal: Sucursal;
     }[]
@@ -274,7 +299,7 @@ function aNodo(venta: Venta) {
 function cabeceraDesdeNodo(
   nodo: Node,
   idFarmaceutico: string,
-): Omit<Venta, "id_cliente" | "id_receta" | "items"> {
+): Omit<Venta, "id_cliente" | "id_receta" | "items" | "stock_descontado"> {
   const v = nodo.properties;
   return {
     _id: v.id_venta,

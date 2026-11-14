@@ -25,6 +25,7 @@ import {
   q13ModificarCliente,
 } from "../src/queries/q13.js";
 import { q14RegistrarVenta } from "../src/queries/q14.js";
+import { q15DescontarStock } from "../src/queries/q15.js";
 
 type Consulta = (repos: Repositorios, args: string[]) => Promise<unknown>;
 
@@ -68,6 +69,7 @@ const consultas: Record<number, Consulta> = {
       items: itemsDeVenta(resto.filter((arg) => arg !== receta)),
     });
   },
+  15: (repos, args) => q15DescontarStock(repos, parametro(args, 0, "id_venta")),
 };
 
 const [numero, ...args] = process.argv.slice(2);

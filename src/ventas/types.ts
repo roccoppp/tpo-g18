@@ -31,4 +31,9 @@ export interface Venta {
   total: number;
   estado: (typeof ESTADOS_VENTA)[number];
   items: ItemVenta[];
+  /**
+   * Si ya se descontó el stock de los ítems (q15). Evita descontar dos veces la misma venta. No
+   * viene en el CSV: la carga lo pone en false. Solo está en MongoDB.
+   */
+  stock_descontado: boolean;
 }
