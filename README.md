@@ -85,6 +85,7 @@ npm run query -- <número> [parámetros...]
 | 11  | Ingresos totales por farmacéutico en el mes actual (solo 'Completada') | `src/queries/q11.ts` |
 | 12  | Clientes sin ventas en el último año | `src/queries/q12.ts` |
 | 13  | ABM de clientes: alta (DNI único), modificación de contacto y cobertura, baja lógica (ver abajo) | `src/queries/q13.ts` |
+| 14  | Registro de una venta 'Completada' con validaciones y actualización de la receta (ver abajo) | `src/queries/q14.ts` |
 
 Uso de q13 (los campos van como `campo=valor`; un valor vacío, como `nro_afiliado=`, se toma como nulo):
 
@@ -96,3 +97,12 @@ npm run query -- 13 baja C009
 ```
 
 El alta recibe todos los campos menos el id, que se asigna solo. La modificación acepta `email`, `telefono`, `obra_social` y `nro_afiliado`. Cada operación imprime el cliente antes y después. Si una validación no pasa, imprime `Rechazado: <motivo>` y termina con código 1.
+
+Uso de q14 (cada ítem va como `id_producto:cantidad`; la receta, solo si algún producto la requiere):
+
+```bash
+npm run query -- 14 C001 F001 Efectivo PRD001:2 PRD011:1
+npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+```
+
+La venta se registra con fecha de hoy, el precio de lista vigente de cada producto y el total calculado a partir de los ítems. Si tiene receta, registra la dispensa. Imprime la venta y, si corresponde, la receta antes y después. Si una validación no pasa, imprime `Rechazado: <motivo>` y no modifica ningún dato.

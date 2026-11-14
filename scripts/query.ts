@@ -24,6 +24,7 @@ import {
   q13BajaCliente,
   q13ModificarCliente,
 } from "../src/queries/q13.js";
+import { q14RegistrarVenta } from "../src/queries/q14.js";
 
 type Consulta = (repos: Repositorios, args: string[]) => Promise<unknown>;
 
@@ -54,6 +55,18 @@ const consultas: Record<number, Consulta> = {
     }
     if (operacion === "baja") return q13BajaCliente(clientes, resto[0] ?? "");
     throw new OperacionRechazada("la operación tiene que ser alta, modificar o baja");
+  },
+  // 14 <id_cliente> <id_farmaceutico> <medio_pago> [receta=<id_receta>] <id_producto>:<cantidad> ...
+  14: (repos, args) => {
+    const [, , , ...resto] = args;
+    const receta = resto.find((arg) => arg.startsWith("receta="));
+    return q14RegistrarVenta(repos, {
+      id_cliente: parametro(args, 0, "id_cliente"),
+      id_farmaceutico: parametro(args, 1, "id_farmaceutico"),
+      medio_pago: parametro(args, 2, "medio_pago"),
+      id_receta: receta ? receta.slice("receta=".length) || null : null,
+      items: itemsDeVenta(resto.filter((arg) => arg !== receta)),
+    });
   },
 };
 
@@ -102,4 +115,18 @@ function campos(pares: string[], permitidos: readonly string[]): Record<string, 
     resultado[campo] = par.slice(separador + 1) || null;
   }
   return resultado;
+}
+
+/**
+ * Convierte argumentos `id_producto:cantidad` en los ítems de una venta. La cantidad se valida en
+ * q14: acá solo se rechaza un argumento sin el formato.
+ */
+function itemsDeVenta(pares: string[]): { id_producto: string; cantidad: number }[] {
+  return pares.map((par) => {
+    const [idProducto, cantidad, ...sobrante] = par.split(":");
+    if (!idProducto || cantidad === undefined || sobrante.length > 0) {
+      throw new OperacionRechazada(`"${par}" no es válido: se espera id_producto:cantidad`);
+    }
+    return { id_producto: idProducto, cantidad: Number(cantidad) };
+  });
 }
