@@ -1,0 +1,11 @@
+id_cliente,nombre,apellido,dni,email,telefono,ciudad,provincia,obra_social,nro_afiliado,activo
+C009,Nicolás,Aguirre,42110234,nico.aguirre@gmail.com,1161234501,Buenos Aires,Buenos Aires,OSDE,OS-420310,True
+C010,Brenda,Castro,38900123,brenda.c@gmail.com,3415120202,Rosario,Santa Fe,Swiss Medical,SM-310422,True
+C011,Esteban,Molina,29876543,esteban.m@gmail.com,2614230303,Mendoza,Mendoza,Galeno,GA-118833,True
+C012,Marina,Ortiz,35123987,marina.o@gmail.com,3814340404,San Miguel de Tucumán,Tucumán,Sin cobertura,,True
+C013,Raúl,Domínguez,12345678,raul.d@gmail.com,1145450505,Quilmes,Buenos Aires,PAMI,PA-550211,True
+C014,Antonella,Vera,41567890,anto.v@gmail.com,2214560606,La Plata,Buenos Aires,IOMA,IO-612045,True
+C015,Joaquín,Funes,36456789,joaquin.f@gmail.com,2994670707,Neuquén,Neuquén,Sin cobertura,,False
+C016,Mercedes,Lagos,31789012,mechi.l@gmail.com,2234780808,Mar del Plata,Buenos Aires,OSDE,OS-298774,True
+C017,Pablo,Quiroga,27345678,pablo.q@gmail.com,3874890909,Salta,Salta,Swiss Medical,SM-455120,True
+C018,Daniela,Ferreyra,40234567,dani.f@gmail.com,3515901010,Córdoba,Córdoba,Galeno,GA-771920,True
