@@ -1,0 +1,11 @@
+id_proveedor,razon_social,cuit,tipo,ciudad,provincia,telefono,activo
+PRV006,Laboratorios Del Plata S.A.,30-71444555-2,Laboratorio,Buenos Aires,Buenos Aires,1145006600,True
+PRV007,Droguería del Norte S.R.L.,30-70666777-4,Droguería,San Miguel de Tucumán,Tucumán,3814507700,True
+PRV008,Cuyo Pharma S.A.,30-71222333-6,Laboratorio,Mendoza,Mendoza,2614608800,True
+PRV009,Distribuidora Patagonia Salud S.R.L.,30-70999888-8,Droguería,Neuquén,Neuquén,2994709900,True
+PRV010,Laboratorios Mediterráneo S.A.,30-71777666-0,Laboratorio,Córdoba,Córdoba,3514801010,True
+PRV011,Droguería Atlántica S.A.,30-70111222-7,Droguería,Mar del Plata,Buenos Aires,2234902020,True
+PRV012,Sierras Farma S.A.,30-71333444-5,Laboratorio,Villa Carlos Paz,Córdoba,3541003030,False
+PRV013,Droguería Cordillera S.R.L.,30-70555666-9,Droguería,Salta,Salta,3874104040,True
+PRV014,BioSur Laboratorios S.A.,30-71999000-1,Laboratorio,Bahía Blanca,Buenos Aires,2914205050,True
+PRV015,Federal Medic S.R.L.,30-70444111-2,Droguería,Santa Fe,Santa Fe,3424306060,False
