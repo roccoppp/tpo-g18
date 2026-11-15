@@ -1,0 +1,11 @@
+id_sucursal,nombre,tipo,direccion,ciudad,provincia,telefono,activo
+S006,Farmacia Recoleta,Farmacia,Av. Callao 1250,Buenos Aires,Buenos Aires,1148006006,True
+S007,Farmacia La Plata Centro,Farmacia,Calle 7 890,La Plata,Buenos Aires,2214007007,True
+S008,Farmacia Mendoza Centro,Farmacia,San Martín 1120,Mendoza,Mendoza,2614008008,True
+S009,Farmacia Tucumán,Farmacia,Av. Sarmiento 450,San Miguel de Tucumán,Tucumán,3814009009,True
+S010,Farmacia Mar del Plata,Farmacia,Av. Colón 2210,Mar del Plata,Buenos Aires,2234010010,True
+S011,Farmacia Salta Capital,Farmacia,Caseros 780,Salta,Salta,3874011011,False
+S012,Droguería Norte,Droguería,Ruta 9 km 30,Pilar,Buenos Aires,2304012012,True
+S013,Droguería Cuyo,Droguería,Acceso Este km 8,Mendoza,Mendoza,2614013013,True
+S014,Farmacia Quilmes,Farmacia,Rivadavia 330,Quilmes,Buenos Aires,1142014014,True
+S015,Farmacia Neuquén,Farmacia,Av. Argentina 150,Neuquén,Neuquén,2994015015,True
