@@ -1652,9 +1652,9 @@ pero no aparece porque también compró en el último año:
 ```bash
 npm run query -- 13 alta nombre=Valentina apellido=Sosa dni=41222333 email=vale.sosa@gmail.com \
   telefono=1145990011 ciudad="La Plata" provincia="Buenos Aires" obra_social=OSDE nro_afiliado=OS-412233
-npm run query -- 13 modificar C009 email=valentina.sosa@outlook.com telefono=1145990022 \
+npm run query -- 13 modificar C019 email=valentina.sosa@outlook.com telefono=1145990022 \
   obra_social="Sin cobertura" nro_afiliado=
-npm run query -- 13 baja C009
+npm run query -- 13 baja C019
 ```
 
 **Código:**
@@ -1672,9 +1672,10 @@ if (!despues) throw new OperacionRechazada(`el cliente ${antes._id} cambió mien
 await this.copiar(despues);
 ```
 
-**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`. Antes del alta, C009
-no existe en ninguno de los dos motores. Después de cada operación se muestra también el nodo
-`(:Cliente)` de Neo4j, consultado con `cypher-shell`.
+**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`. Antes del alta, C019
+no existe en ninguno de los dos motores (la carga dejó el contador de clientes en C018, el id más
+alto de los 18 clientes cargados). Después de cada operación se muestra también el nodo `(:Cliente)`
+de Neo4j, consultado con Cypher desde un script que usa el driver del proyecto.
 
 Alta:
 
@@ -1682,7 +1683,7 @@ Alta:
 {
   "antes": null,
   "despues": {
-    "_id": "C009",
+    "_id": "C019",
     "nombre": "Valentina",
     "apellido": "Sosa",
     "dni": "41222333",
@@ -1707,7 +1708,7 @@ Modificación de contacto y cobertura (pasa a 'Sin cobertura' y vacía el númer
 ```json
 {
   "antes": {
-    "_id": "C009",
+    "_id": "C019",
     "nombre": "Valentina",
     "apellido": "Sosa",
     "dni": "41222333",
@@ -1720,7 +1721,7 @@ Modificación de contacto y cobertura (pasa a 'Sin cobertura' y vacía el númer
     "activo": true
   },
   "despues": {
-    "_id": "C009",
+    "_id": "C019",
     "nombre": "Valentina",
     "apellido": "Sosa",
     "dni": "41222333",
@@ -1745,7 +1746,7 @@ Baja lógica:
 ```json
 {
   "antes": {
-    "_id": "C009",
+    "_id": "C019",
     "nombre": "Valentina",
     "apellido": "Sosa",
     "dni": "41222333",
@@ -1758,7 +1759,7 @@ Baja lógica:
     "activo": true
   },
   "despues": {
-    "_id": "C009",
+    "_id": "C019",
     "nombre": "Valentina",
     "apellido": "Sosa",
     "dni": "41222333",
@@ -1796,8 +1797,8 @@ Rechazado: con 'Sin cobertura', nro_afiliado tiene que quedar vacío
 $ npm run query -- 13 modificar C001 dni=99999999
 Rechazado: "dni=99999999" no es válido: se espera campo=valor, sin repetir, con campo en email, telefono, obra_social, nro_afiliado
 
-$ npm run query -- 13 baja C009
-Rechazado: el cliente C009 está dado de baja
+$ npm run query -- 13 baja C019
+Rechazado: el cliente C019 está dado de baja
 ```
 
 ### Q14: Registro de una venta 'Completada' con validaciones y actualización de receta
@@ -1878,7 +1879,7 @@ await this.coleccion.updateOne(
 ```
 
 **Estado antes / después.** Salidas reales, ejecutadas en este orden después de `npm run seed`, el
-14/11/2026. Antes de la primera venta, la última venta cargada es V020 y el último ítem D027; RC002
+15/11/2026. Antes de la primera venta, la última venta cargada es V026 y el último ítem D034; RC002
 es una receta de tratamiento prolongado de C003 con 2 de 3 dispensas realizadas, y F005 trabaja en
 S003, donde el único lote de PRD008 (L010) tiene 12 unidades.
 
@@ -1891,18 +1892,18 @@ $ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 ```json
 {
   "venta": {
-    "_id": "V021",
+    "_id": "V027",
     "id_cliente": "C003",
     "id_farmaceutico": "F005",
     "id_receta": "RC002",
-    "fecha": "2026-11-14T00:00:00.000Z",
+    "fecha": "2026-11-15T00:00:00.000Z",
     "tipo": "Con receta",
     "medio_pago": "Débito",
     "total": 7300,
     "estado": "Completada",
     "items": [
       {
-        "id_detalle": "D028",
+        "id_detalle": "D035",
         "id_producto": "PRD008",
         "cantidad": 1,
         "precio_unit": 7300
@@ -1959,11 +1960,11 @@ $ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 }
 ```
 
-Las copias en Neo4j, consultadas con `cypher-shell`:
+Las copias en Neo4j, consultadas con Cypher:
 
 ```text
 v.id_venta, v.fecha, v.tipo, v.total, v.estado, f.id_farmaceutico, c.id_cliente
-"V021", 2026-11-14, "Con receta", 7300, "Completada", "F005", "C003"
+"V027", 2026-11-15, "Con receta", 7300, "Completada", "F005", "C003"
 l.id_lote, l.unidades
 "L010", 11
 ```
@@ -1972,13 +1973,13 @@ Venta con una receta a la que le quedan dispensas (RC004, de C006, con 1 de 3 re
 próxima dispensa se fija 30 días después de hoy. Extracto de la salida, con los campos que cambian:
 
 ```text
-$ npm run query -- 14 C006 F005 Obra social receta=RC004 PRD008:1
+$ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1
 ```
 
 ```json
 {
   "venta": {
-    "_id": "V022",
+    "_id": "V028",
     "id_receta": "RC004",
     "total": 7300,
     "stock_descontado": true
@@ -1993,7 +1994,7 @@ $ npm run query -- 14 C006 F005 Obra social receta=RC004 PRD008:1
     "despues": {
       "dispensas_autorizadas": 3,
       "dispensas_realizadas": 2,
-      "proxima_dispensa": "2026-12-14T00:00:00.000Z",
+      "proxima_dispensa": "2026-12-15T00:00:00.000Z",
       "estado": "Vigente"
     }
   },
@@ -2012,9 +2013,10 @@ $ npm run query -- 14 C006 F005 Obra social receta=RC004 PRD008:1
 }
 ```
 
-**Casos de rechazo.** Ejecutados a continuación. Cada uno termina con código 1. El último pasa todas
-las validaciones, pero en S003 solo hay 18 unidades vigentes de PRD001: la transacción se descarta
-completa.
+**Casos de rechazo.** Ejecutados a continuación. Cada uno termina con código 1. Los dos últimos pasan
+todas las validaciones de datos, pero no hay stock vigente suficiente y la transacción se descarta
+completa. En S003 solo hay 18 unidades vigentes de PRD001. En S004 hay 75 unidades vigentes de PRD003
+(L006): el lote L030, de 30 unidades, venció el 31/08/2026 y no se cuenta.
 
 ```text
 $ npm run query -- 14 C001 F007 Efectivo PRD001:1
@@ -2027,13 +2029,21 @@ $ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 Rechazado: la receta RC002 no está vigente (Completada)
 $ npm run query -- 14 C006 F005 "Obra social" receta=RC004 PRD008:1 PRD001:20
 Rechazado: stock vigente insuficiente de PRD001 en S003: se piden 20 unidades y hay 18
+$ npm run query -- 14 C015 F001 Efectivo PRD001:1
+Rechazado: el cliente C015 está dado de baja
+$ npm run query -- 14 C001 F014 Efectivo PRD001:1
+Rechazado: el farmacéutico F014 no está activo
+$ npm run query -- 14 C014 F008 "Obra social" receta=RC014 PRD015:1
+Rechazado: la receta RC014 no está vigente (Vencida)
+$ npm run query -- 14 C006 F006 "Obra social" receta=RC004 PRD003:76
+Rechazado: stock vigente insuficiente de PRD003 en S004: se piden 76 unidades y hay 75
 ```
 
-Después de los rechazos no cambió ningún dato: la colección `ventas` sigue con 22 documentos (las 20
-cargadas, V021 y V022), RC004 sigue con 2 dispensas realizadas y la próxima el 14/12/2026, y los
-lotes L003 (PRD001) y L010 (PRD008) siguen en 18 y 10 unidades. El último rechazo ya había pedido sus
-ids a los contadores (`ventas` quedó en 23 y `detalle_ventas` en 31): V023 y sus ítems quedan sin
-usar, igual que con un alta de cliente rechazada (Q13).
+Después de los rechazos no cambió ningún dato: la copia de Neo4j tiene 28 ventas (las 26
+cargadas, V027 y V028), RC004 sigue con 2 dispensas realizadas y la próxima el 15/12/2026 (`npm run
+query -- 3 C006`), y los lotes L003 (PRD001) y L010 (PRD008) siguen en 18 y 10 unidades. Los rechazos
+por stock insuficiente ya habían pedido sus ids a los contadores (`ventas` y `detalle_ventas`):
+esos ids quedan sin usar, igual que con un alta de cliente rechazada (Q13).
 
 ### Q15: Descuento masivo de stock de una venta (FEFO, sin lotes vencidos, todo o nada)
 
@@ -2087,7 +2097,7 @@ for (const { lote, unidades } of descuentos) {
 }
 ```
 
-**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`, el 14/11/2026. V003 es
+**Estado antes / después.** Salidas reales sobre los datos de `npm run seed`, el 15/11/2026. V003 es
 una venta 'Completada' de un ítem de PRD003 atendida por F001, que trabaja en S001. En S001 hay dos
 lotes de PRD003: L005 (40 unidades, vence el 30/11/2026) y L015 (100 unidades, vence el 30/06/2027).
 FEFO elige L005, el que vence antes:
@@ -2141,7 +2151,7 @@ $ npm run query -- 15 V003
 }
 ```
 
-La copia en Neo4j:
+La copia en Neo4j, consultada con Cypher:
 
 ```text
 l.id_lote, l.unidades
@@ -2160,7 +2170,7 @@ $ npm run query -- 14 C006 F001 Débito receta=RC003 PRD003:50
 ```json
 {
   "venta": {
-    "_id": "V021",
+    "_id": "V027",
     "id_receta": "RC003",
     "total": 490000,
     "stock_descontado": true
@@ -2212,21 +2222,79 @@ l.id_lote, l.unidades
 "L015", 89
 ```
 
-**Casos de rechazo.** Ejecutados después de la primera ejecución sobre V003. V010 vende una unidad
-de PRD010 en S002: el único lote de PRD010 en S002, L012, tiene 30 unidades pero venció el
-31/10/2026, así que no cuenta como stock vigente. En V001 no hay ningún lote de PRD007 en S002. En
-todos los casos ningún lote cambia.
+**Casos de rechazo.** Ejecutados después de la primera ejecución sobre V003. V012 está 'Pendiente' y
+V025 está 'Anulada'. V010 vende una unidad de PRD010 en S002: el único lote de PRD010 en S002, L012,
+tiene 30 unidades pero venció el 31/10/2026, así que no cuenta como stock vigente. En V001 no hay
+ningún lote de PRD007 en S002. En todos los casos ningún lote cambia.
 
 ```text
 $ npm run query -- 15 V003
 Rechazado: el stock de la venta V003 ya se descontó
 $ npm run query -- 15 V012
 Rechazado: la venta V012 está 'Pendiente': solo una venta 'Completada' descuenta stock
+$ npm run query -- 15 V025
+Rechazado: la venta V025 está 'Anulada': solo una venta 'Completada' descuenta stock
 $ npm run query -- 15 V010
 Rechazado: stock vigente insuficiente de PRD010 en S002: se pide 1 unidad y hay 0
 $ npm run query -- 15 V001
 Rechazado: stock vigente insuficiente de PRD007 en S002: se pide 1 unidad y hay 0
 ```
+
+**Una venta de los registros adicionales.** V021 (C014, atendida por F008 en la Farmacia Recoleta,
+S006) tiene dos ítems: 2 unidades de PRD014 y 1 de PRD001. Cada producto se descuenta de su lote en
+S006 (L019 y L027), y la venta queda marcada con `stock_descontado: true` (extracto):
+
+```text
+$ npm run query -- 15 V021
+```
+
+```json
+{
+  "venta": {
+    "_id": "V021",
+    "id_farmaceutico": "F008",
+    "total": 9000,
+    "stock_descontado": true
+  },
+  "lotes": [
+    {
+      "antes": {
+        "_id": "L019",
+        "id_producto": "PRD014",
+        "id_sucursal": "S006",
+        "unidades": 85
+      },
+      "despues": {
+        "_id": "L019",
+        "id_producto": "PRD014",
+        "id_sucursal": "S006",
+        "unidades": 83
+      }
+    },
+    {
+      "antes": {
+        "_id": "L027",
+        "id_producto": "PRD001",
+        "id_sucursal": "S006",
+        "unidades": 300
+      },
+      "despues": {
+        "_id": "L027",
+        "id_producto": "PRD001",
+        "id_sucursal": "S006",
+        "unidades": 299
+      }
+    }
+  ]
+}
+```
+
+```text
+l.id_lote, l.unidades
+"L019", 83
+"L027", 299
+```
+
 
 ---
 
