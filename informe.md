@@ -329,23 +329,49 @@ las relaciones. Cada restricción de unicidad crea además el índice que usan l
 
 ## 6. Estrategia de carga de datos
 
-> **TODO:**
->
-> - Cómo funciona `npm run seed`: lee `data/provistos/` y `data/adicionales/`, valida y después
->   escribe. Por qué es idempotente.
-> - Registros adicionales: el enunciado pide al menos 10 por colección. Describir qué casos borde
->   ejercitan: fechas recientes, stock bajo, lotes próximos a vencer o vencidos, recetas vencidas,
->   clientes sin compras, ventas pendientes, etc. Indicar qué consulta ejercita cada caso.
+### 6.1 Cómo funciona `npm run seed`
 
-Registros adicionales incorporados hasta ahora:
+El script `scripts/seed.ts` hace tres cosas, siempre en este orden:
 
-| Archivo                               | Registros                 | Caso que ejercita                                                                                                                       |
-| ------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `data/adicionales/ventas.csv`         | V017, V018, V019, V020    | Ventas de noviembre de 2026 (fechas recientes): el mes actual de q11 y los últimos 60 días de q05. V020 está anulada, así que q05, q09 y q11 la excluyen. V017 suma exactamente $5.000, el borde de q09 |
-| `data/adicionales/detalle_ventas.csv` | D023 a D027               | Ítems de esas ventas. El total de cada venta coincide con la suma de sus ítems                                                          |
+1. **Lee** cada entidad desde dos carpetas: `data/provistos/` (los CSV de la cátedra) y, si existe un
+   archivo con el mismo nombre, `data/adicionales/` (los registros del equipo). Las filas de los dos
+   archivos se suman.
+2. **Valida todo antes de escribir en cualquier motor**: tipos y formatos de cada campo, valores
+   admitidos (tipo de venta, estado, obra social, etc.), ids únicos, DNI y matrículas únicos, que cada
+   referencia apunte a una entidad que existe (producto → proveedor, lote → producto y sucursal, receta
+   → cliente, venta → cliente, farmacéutico, receta y productos), unidades de lote no negativas, reglas
+   de cliente (las mismas que usa q13) y que el total de cada venta sea igual a la suma de sus ítems. Si algo falla, el
+   script termina con un error que dice qué fila y qué regla, y no modifica ningún dato.
+3. **Escribe** en un orden que respeta las dependencias: proveedores, sucursales, productos, lotes,
+   clientes, farmacéuticos, recetas y ventas.
+
+**Es idempotente** porque cada repositorio reemplaza la entidad completa: borra lo que había y vuelve a
+cargar todo desde los CSV. Ejecutar `npm run seed` una, dos o diez veces deja los datos en el mismo
+estado, y también deja los contadores de ids (§4.1) en el id más alto cargado. El costo es que descarta
+lo que hayan escrito los servicios (q13, q14 y q15): para reconstruir solo las copias de Neo4j sin
+volver a los CSV existe `npm run sync` (§3.3, punto 3).
+
+### 6.2 Registros adicionales
+
+El enunciado pide al menos 10 registros propios en cada colección. Cada archivo de
+`data/adicionales/` tiene el mismo nombre y los mismos encabezados que el provisto, y sus registros
+están pensados para ejercitar casos borde de las consultas:
+
+| Archivo | Registros | Caso que ejercita |
+| ------- | --------- | ----------------- |
+| `proveedores.csv` | PRV006 a PRV015 (10) | Laboratorios y droguerías de varias provincias. PRV012 y PRV015 están inactivos: PRD023 se provee de PRV012, así que q01 y q08 muestran un proveedor inactivo |
+| `sucursales.csv` | S006 a S015 (10) | Ocho farmacias y dos droguerías. S011 es una farmacia inactiva. Las droguerías (S012, S013) no venden: q05 muestra con 0 ventas a sus farmacéuticos y q10 devuelve una lista vacía para ellas |
+| `productos.csv` | PRD014 a PRD023 (10) | Condiciones de venta libre, bajo receta y bajo receta archivada (PRD016). PRD020 está inactivo y PRD023 no tiene principio activo (`No aplica`). q07 cuenta productos vendidos y q14 valida existencia y estado activo |
+| `stock_lotes.csv` | L019 a L030 (12) | **Stock bajo** (menos de 50 unidades) en L020, L021, L022, L026 y L030, para q08. **Lotes vencidos** al 15/11/2026: L024 y L030. **Próximos a vencer**: L021 (25/11), L022 (05/12) y L029 (20/12). L030 (vencido) convive con L006 (vigente) del mismo producto y sucursal, para probar que q15 no usa lotes vencidos; L024 no tiene lote vigente que lo reemplace |
+| `clientes.csv` | C009 a C018 (10) | **Clientes sin compras**: C009, C011, C012, C015 y C018 (q12). C015 está dado de baja y C012 y C015 no tienen cobertura (sin número de afiliado). C009, C010 y C013 tienen más de una receta (q04) |
+| `farmaceuticos.csv` | F008 a F017 (10) | F014 está inactivo. F010, F012, F013, F016 y F017 no tienen ventas: q05 los muestra con 0. F015 trabaja en una droguería |
+| `recetas.csv` | RC010 a RC019 (10) | **Recetas vencidas**: RC014 y RC018. Tratamiento prolongado vigente con próxima dispensa atrasada: RC011 y RC013 (q06). RC012 y RC019 todavía no están atrasadas. RC015 es una receta archivada y RC016 está completada, para las validaciones de q14 |
+| `ventas.csv` | V017 a V026 (10) | **Fechas recientes** (noviembre de 2026): V017, V018, V019, V021, V022 y V024 cuentan para q11 y q05. **Pendiente**: V023 (q02). **Anuladas**: V020 y V025, que excluyen q05, q07, q09 y q11. V017 suma exactamente $5.000, el borde de q09. V026 es de mayo de 2025: C013 no tiene ventas en el último año (q12) |
+| `detalle_ventas.csv` | D023 a D034 (12) | Ítems de esas ventas. El total de cada venta coincide con la suma de sus ítems |
 
 Las fechas de estos registros son fijas, y las consultas calculan "hoy" con la fecha del sistema. Si
-se ejecutan en un mes posterior a noviembre de 2026, q11 no encuentra ventas del mes actual.
+se ejecutan en un mes posterior a noviembre de 2026, q11 no encuentra ventas del mes actual, y los
+lotes marcados como próximos a vencer ya estarán vencidos.
 
 ---
 
@@ -387,7 +413,8 @@ RETURN v, f, s
 ORDER BY v.id_venta
 ```
 
-**Ejemplo de resultado** (`npm run query -- 2`):
+**Ejemplo de resultado** (`npm run query -- 2`). Son las tres ventas pendientes: V011 y V012, de los
+datos provistos, y V023, adicional, que atendió F011 en la Farmacia Mendoza Centro (S008):
 
 ```json
 [
@@ -444,6 +471,34 @@ ORDER BY v.id_venta
       "ciudad": "Rosario",
       "provincia": "Santa Fe",
       "telefono": "3414003003",
+      "activo": true
+    }
+  },
+  {
+    "_id": "V023",
+    "id_farmaceutico": "F011",
+    "fecha": "2026-11-12T00:00:00.000Z",
+    "tipo": "Con receta",
+    "medio_pago": "Obra social",
+    "total": 5600,
+    "estado": "Pendiente",
+    "farmaceutico": {
+      "id_farmaceutico": "F011",
+      "nombre": "Paula",
+      "apellido": "Ibáñez",
+      "matricula": "MN-18511",
+      "cargo": "Director Técnico",
+      "id_sucursal": "S008",
+      "activo": true
+    },
+    "sucursal": {
+      "id_sucursal": "S008",
+      "nombre": "Farmacia Mendoza Centro",
+      "tipo": "Farmacia",
+      "direccion": "San Martín 1120",
+      "ciudad": "Mendoza",
+      "provincia": "Mendoza",
+      "telefono": "2614008008",
       "activo": true
     }
   }
@@ -516,7 +571,8 @@ return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
         "cantidad": 1,
         "precio_unit": 5700
       }
-    ]
+    ],
+    "stock_descontado": false
   },
   {
     "registro": "venta",
@@ -536,7 +592,8 @@ return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
         "cantidad": 2,
         "precio_unit": 6200
       }
-    ]
+    ],
+    "stock_descontado": false
   }
 ]
 ```
@@ -566,7 +623,9 @@ this.coleccion.aggregate([
 ]);
 ```
 
-**Ejemplo de resultado** (`npm run query -- 4`):
+**Ejemplo de resultado** (`npm run query -- 4`). Los clientes C001, C002 y C006, de los datos provistos,
+tienen dos recetas cada uno. Con las recetas adicionales se suman C009 (RC010 y RC017), C010 (RC011 y
+RC012) y C013 (RC013 y RC019):
 
 ```json
 [
@@ -611,6 +670,48 @@ this.coleccion.aggregate([
     "nro_afiliado": "PA-662871",
     "activo": true,
     "cantidad_recetas": 2
+  },
+  {
+    "_id": "C009",
+    "nombre": "Nicolás",
+    "apellido": "Aguirre",
+    "dni": "42110234",
+    "email": "nico.aguirre@gmail.com",
+    "telefono": "1161234501",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-420310",
+    "activo": true,
+    "cantidad_recetas": 2
+  },
+  {
+    "_id": "C010",
+    "nombre": "Brenda",
+    "apellido": "Castro",
+    "dni": "38900123",
+    "email": "brenda.c@gmail.com",
+    "telefono": "3415120202",
+    "ciudad": "Rosario",
+    "provincia": "Santa Fe",
+    "obra_social": "Swiss Medical",
+    "nro_afiliado": "SM-310422",
+    "activo": true,
+    "cantidad_recetas": 2
+  },
+  {
+    "_id": "C013",
+    "nombre": "Raúl",
+    "apellido": "Domínguez",
+    "dni": "12345678",
+    "email": "raul.d@gmail.com",
+    "telefono": "1145450505",
+    "ciudad": "Quilmes",
+    "provincia": "Buenos Aires",
+    "obra_social": "PAMI",
+    "nro_afiliado": "PA-550211",
+    "activo": true,
+    "cantidad_recetas": 2
   }
 ]
 ```
@@ -638,9 +739,11 @@ RETURN f, s.id_sucursal AS idSucursal, count(v) AS cantidad
 ORDER BY cantidad DESC, f.id_farmaceutico
 ```
 
-**Ejemplo de resultado** (`npm run query -- 5`, ejecutado el 10/11/2026, así que cuenta desde el
-11/09/2026). F007 trabaja en la droguería, que no registra ventas, y aparece con 0. F004 no aparece
-porque está inactivo. La venta anulada V015 de F002 no se cuenta.
+**Ejemplo de resultado** (`npm run query -- 5`, ejecutado el 15/11/2026, así que cuenta desde el
+16/09/2026). Hay siete farmacéuticos con 0 ventas en el período: F007 y F015 trabajan en droguerías, que
+no registran ventas, y F010, F012, F013, F016 y F017 son farmacéuticos adicionales sin ventas. F004 y F014
+no aparecen porque están inactivos. Las ventas anuladas V015, V020 y V025 no se cuentan, y V011 y V012, que
+están pendientes, sí:
 
 ```json
 [
@@ -685,6 +788,16 @@ porque está inactivo. La venta anulada V015 de F002 no se cuenta.
     "cantidad_ventas": 2
   },
   {
+    "id_farmaceutico": "F011",
+    "nombre": "Paula",
+    "apellido": "Ibáñez",
+    "matricula": "MN-18511",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S008",
+    "activo": true,
+    "cantidad_ventas": 2
+  },
+  {
     "id_farmaceutico": "F003",
     "nombre": "Carolina",
     "apellido": "Benítez",
@@ -695,12 +808,92 @@ porque está inactivo. La venta anulada V015 de F002 no se cuenta.
     "cantidad_ventas": 1
   },
   {
+    "id_farmaceutico": "F008",
+    "nombre": "Lucas",
+    "apellido": "Medina",
+    "matricula": "MN-18455",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S006",
+    "activo": true,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F009",
+    "nombre": "Valeria",
+    "apellido": "Domínguez",
+    "matricula": "MN-18462",
+    "cargo": "Farmacéutico",
+    "id_sucursal": "S006",
+    "activo": true,
+    "cantidad_ventas": 1
+  },
+  {
     "id_farmaceutico": "F007",
     "nombre": "Romina",
     "apellido": "Acuña",
     "matricula": "MN-18401",
     "cargo": "Director Técnico",
     "id_sucursal": "S005",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F010",
+    "nombre": "Gonzalo",
+    "apellido": "Herrera",
+    "matricula": "MN-18490",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S007",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F012",
+    "nombre": "Diego",
+    "apellido": "Sosa",
+    "matricula": "MN-18530",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S009",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F013",
+    "nombre": "Florencia",
+    "apellido": "Rojas",
+    "matricula": "MN-18544",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S010",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F015",
+    "nombre": "Camila",
+    "apellido": "Peralta",
+    "matricula": "MN-18577",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S012",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F016",
+    "nombre": "Tomás",
+    "apellido": "Villalba",
+    "matricula": "MN-18593",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S014",
+    "activo": true,
+    "cantidad_ventas": 0
+  },
+  {
+    "id_farmaceutico": "F017",
+    "nombre": "Agustina",
+    "apellido": "Luna",
+    "matricula": "MN-18610",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S015",
     "activo": true,
     "cantidad_ventas": 0
   }
@@ -730,7 +923,10 @@ this.coleccion.aggregate([
 ]);
 ```
 
-**Ejemplo de resultado** (`npm run query -- 6`, ejecutado el 10/11/2026):
+**Ejemplo de resultado** (`npm run query -- 6`, ejecutado el 15/11/2026). Además de las tres recetas de los
+datos provistos, aparecen RC013 (C013, próxima dispensa el 10/10/2026) y RC011 (C010, el 01/11/2026), que
+son adicionales. RC012 (próxima dispensa el 20/11/2026) y RC019 (el 10/12/2026) todavía no están atrasadas,
+y RC016 está completada, así que no entran:
 
 ```json
 [
@@ -785,6 +981,31 @@ this.coleccion.aggregate([
     }
   },
   {
+    "_id": "RC013",
+    "id_cliente": "C013",
+    "medico": "Dr. Ernesto Villar",
+    "matricula_medico": "MP-39001",
+    "fecha_emision": "2026-08-10T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 3,
+    "dispensas_realizadas": 1,
+    "proxima_dispensa": "2026-10-10T00:00:00.000Z",
+    "estado": "Vigente",
+    "cliente": {
+      "_id": "C013",
+      "nombre": "Raúl",
+      "apellido": "Domínguez",
+      "dni": "12345678",
+      "email": "raul.d@gmail.com",
+      "telefono": "1145450505",
+      "ciudad": "Quilmes",
+      "provincia": "Buenos Aires",
+      "obra_social": "PAMI",
+      "nro_afiliado": "PA-550211",
+      "activo": true
+    }
+  },
+  {
     "_id": "RC004",
     "id_cliente": "C006",
     "medico": "Dr. Pablo Echeverría",
@@ -806,6 +1027,31 @@ this.coleccion.aggregate([
       "provincia": "Buenos Aires",
       "obra_social": "PAMI",
       "nro_afiliado": "PA-662871",
+      "activo": true
+    }
+  },
+  {
+    "_id": "RC011",
+    "id_cliente": "C010",
+    "medico": "Dra. Lucrecia Páez",
+    "matricula_medico": "MP-51230",
+    "fecha_emision": "2026-09-01T00:00:00.000Z",
+    "tipo": "Tratamiento prolongado",
+    "dispensas_autorizadas": 4,
+    "dispensas_realizadas": 2,
+    "proxima_dispensa": "2026-11-01T00:00:00.000Z",
+    "estado": "Vigente",
+    "cliente": {
+      "_id": "C010",
+      "nombre": "Brenda",
+      "apellido": "Castro",
+      "dni": "38900123",
+      "email": "brenda.c@gmail.com",
+      "telefono": "3415120202",
+      "ciudad": "Rosario",
+      "provincia": "Santa Fe",
+      "obra_social": "Swiss Medical",
+      "nro_afiliado": "SM-310422",
       "activo": true
     }
   }
@@ -840,8 +1086,10 @@ this.coleccion.aggregate([
 ]);
 ```
 
-**Ejemplo de resultado** (`npm run query -- 7`). PRD005 y PRD011 empatan con 6 unidades. A PRD011
-no le suman la venta pendiente V012 ni la anulada V020:
+**Ejemplo de resultado** (`npm run query -- 7`). Con las ventas adicionales, PRD001 suma 9 unidades y
+PRD011 pasa a 7. A PRD011 no le suman la venta pendiente V012 ni la anulada V020, y a PRD001 no le suma
+la anulada V025. PRD002 y PRD009 empatan con 2 unidades y el desempate por id deja a PRD002 en el quinto
+puesto:
 
 ```json
 [
@@ -855,19 +1103,7 @@ no le suman la venta pendiente V012 ni la anulada V020:
     "precio_unit": 2800,
     "id_proveedor": "PRV001",
     "activo": true,
-    "unidades_vendidas": 8
-  },
-  {
-    "_id": "PRD005",
-    "nombre": "Metformina 850mg x60",
-    "principio_activo": "Metformina",
-    "categoria": "Antidiabético",
-    "presentacion": "Comprimidos x60",
-    "condicion_venta": "Bajo receta",
-    "precio_unit": 5400,
-    "id_proveedor": "PRV003",
-    "activo": true,
-    "unidades_vendidas": 6
+    "unidades_vendidas": 9
   },
   {
     "_id": "PRD011",
@@ -878,6 +1114,18 @@ no le suman la venta pendiente V012 ni la anulada V020:
     "condicion_venta": "Venta libre",
     "precio_unit": 2200,
     "id_proveedor": "PRV001",
+    "activo": true,
+    "unidades_vendidas": 7
+  },
+  {
+    "_id": "PRD005",
+    "nombre": "Metformina 850mg x60",
+    "principio_activo": "Metformina",
+    "categoria": "Antidiabético",
+    "presentacion": "Comprimidos x60",
+    "condicion_venta": "Bajo receta",
+    "precio_unit": 5400,
+    "id_proveedor": "PRV003",
     "activo": true,
     "unidades_vendidas": 6
   },
@@ -894,14 +1142,14 @@ no le suman la venta pendiente V012 ni la anulada V020:
     "unidades_vendidas": 3
   },
   {
-    "_id": "PRD009",
-    "nombre": "Levotiroxina 100mcg x50",
-    "principio_activo": "Levotiroxina",
-    "categoria": "Hormona tiroidea",
-    "presentacion": "Comprimidos x50",
-    "condicion_venta": "Bajo receta",
-    "precio_unit": 5900,
-    "id_proveedor": "PRV003",
+    "_id": "PRD002",
+    "nombre": "Ibuprofeno 400mg x20",
+    "principio_activo": "Ibuprofeno",
+    "categoria": "Antiinflamatorio",
+    "presentacion": "Comprimidos x20",
+    "condicion_venta": "Venta libre",
+    "precio_unit": 3500,
+    "id_proveedor": "PRV001",
     "activo": true,
     "unidades_vendidas": 2
   }
@@ -941,11 +1189,32 @@ this.coleccion
   .sort({ fecha: 1, _id: 1 });
 ```
 
-**Ejemplo de resultado** (`npm run query -- 9`). Quedan afuera V015 y V020, que son ventas libres de
-menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
+**Ejemplo de resultado** (`npm run query -- 9`). Hay cinco ventas libres de menos de $5.000: V026 (de mayo
+de 2025), V013, V014, V018 y V022. Quedan afuera V015 y V020, que son ventas libres de menos de $5.000 pero
+están anuladas, y V017, que suma exactamente $5.000:
 
 ```json
 [
+  {
+    "_id": "V026",
+    "id_cliente": "C013",
+    "id_farmaceutico": "F001",
+    "id_receta": null,
+    "fecha": "2025-05-10T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Efectivo",
+    "total": 3500,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D034",
+        "id_producto": "PRD002",
+        "cantidad": 1,
+        "precio_unit": 3500
+      }
+    ],
+    "stock_descontado": false
+  },
   {
     "_id": "V013",
     "id_cliente": "C001",
@@ -963,7 +1232,8 @@ menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
         "cantidad": 2,
         "precio_unit": 2200
       }
-    ]
+    ],
+    "stock_descontado": false
   },
   {
     "_id": "V014",
@@ -988,7 +1258,8 @@ menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
         "cantidad": 1,
         "precio_unit": 1800
       }
-    ]
+    ],
+    "stock_descontado": false
   },
   {
     "_id": "V018",
@@ -1007,7 +1278,28 @@ menos de $5.000 pero están anuladas, y V017, que suma exactamente $5.000:
         "cantidad": 1,
         "precio_unit": 3500
       }
-    ]
+    ],
+    "stock_descontado": false
+  },
+  {
+    "_id": "V022",
+    "id_cliente": "C016",
+    "id_farmaceutico": "F009",
+    "id_receta": null,
+    "fecha": "2026-11-09T00:00:00.000Z",
+    "tipo": "Venta libre",
+    "medio_pago": "Efectivo",
+    "total": 2200,
+    "estado": "Completada",
+    "items": [
+      {
+        "id_detalle": "D030",
+        "id_producto": "PRD011",
+        "cantidad": 1,
+        "precio_unit": 2200
+      }
+    ],
+    "stock_descontado": false
   }
 ]
 ```
@@ -1104,12 +1396,23 @@ WHERE f.id_farmaceutico IN $ids
 RETURN f, s.id_sucursal AS idSucursal
 ```
 
-**Ejemplo de resultado** (`npm run query -- 11`, ejecutado el 10/11/2026, así que el mes actual es
-noviembre de 2026). Salen de las ventas adicionales V017, V018 y V019 (§6). V020, de F003, está
-anulada y no cuenta, y las ventas de octubre quedan fuera del período:
+**Ejemplo de resultado** (`npm run query -- 11`, ejecutado el 15/11/2026, así que el mes actual es
+noviembre de 2026). Salen de las ventas completadas de noviembre: V017, V018, V019, V021, V022 y V024 (§6).
+V020 y V025 están anuladas, V023 está pendiente y las ventas de octubre quedan fuera del período:
 
 ```json
 [
+  {
+    "id_farmaceutico": "F008",
+    "nombre": "Lucas",
+    "apellido": "Medina",
+    "matricula": "MN-18455",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S006",
+    "activo": true,
+    "ingresos_totales": 9000,
+    "cantidad_ventas": 1
+  },
   {
     "id_farmaceutico": "F006",
     "nombre": "Matías",
@@ -1119,6 +1422,17 @@ anulada y no cuenta, y las ventas de octubre quedan fuera del período:
     "id_sucursal": "S004",
     "activo": true,
     "ingresos_totales": 8400,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F011",
+    "nombre": "Paula",
+    "apellido": "Ibáñez",
+    "matricula": "MN-18511",
+    "cargo": "Director Técnico",
+    "id_sucursal": "S008",
+    "activo": true,
+    "ingresos_totales": 6800,
     "cantidad_ventas": 1
   },
   {
@@ -1141,6 +1455,17 @@ anulada y no cuenta, y las ventas de octubre quedan fuera del período:
     "id_sucursal": "S003",
     "activo": true,
     "ingresos_totales": 3500,
+    "cantidad_ventas": 1
+  },
+  {
+    "id_farmaceutico": "F009",
+    "nombre": "Valeria",
+    "apellido": "Domínguez",
+    "matricula": "MN-18462",
+    "cargo": "Farmacéutico",
+    "id_sucursal": "S006",
+    "activo": true,
+    "ingresos_totales": 2200,
     "cantidad_ventas": 1
   }
 ]
@@ -1169,9 +1494,10 @@ RETURN c, max(anterior.fecha) AS ultimaVenta
 ORDER BY c.id_cliente
 ```
 
-**Ejemplo de resultado** (`npm run query -- 12`, ejecutado el 10/11/2026, así que cuenta desde el
-10/11/2025). C004 compró por última vez el 18/09/2025. C008, dado de baja, nunca compró. C005 tiene
-una venta de junio de 2025, pero no aparece porque también compró en el último año:
+**Ejemplo de resultado** (`npm run query -- 12`, ejecutado el 15/11/2026, así que cuenta desde el
+15/11/2025). C004 compró por última vez el 18/09/2025 y C013, el 10/05/2025 (V026, adicional). C008 y
+C015, dados de baja, y C009, C011, C012 y C018 nunca compraron. C005 tiene una venta de junio de 2025,
+pero no aparece porque también compró en el último año:
 
 ```json
 [
@@ -1201,6 +1527,90 @@ una venta de junio de 2025, pero no aparece porque también compró en el últim
     "obra_social": "Sin cobertura",
     "nro_afiliado": null,
     "activo": false,
+    "ultima_venta": null
+  },
+  {
+    "_id": "C009",
+    "nombre": "Nicolás",
+    "apellido": "Aguirre",
+    "dni": "42110234",
+    "email": "nico.aguirre@gmail.com",
+    "telefono": "1161234501",
+    "ciudad": "Buenos Aires",
+    "provincia": "Buenos Aires",
+    "obra_social": "OSDE",
+    "nro_afiliado": "OS-420310",
+    "activo": true,
+    "ultima_venta": null
+  },
+  {
+    "_id": "C011",
+    "nombre": "Esteban",
+    "apellido": "Molina",
+    "dni": "29876543",
+    "email": "esteban.m@gmail.com",
+    "telefono": "2614230303",
+    "ciudad": "Mendoza",
+    "provincia": "Mendoza",
+    "obra_social": "Galeno",
+    "nro_afiliado": "GA-118833",
+    "activo": true,
+    "ultima_venta": null
+  },
+  {
+    "_id": "C012",
+    "nombre": "Marina",
+    "apellido": "Ortiz",
+    "dni": "35123987",
+    "email": "marina.o@gmail.com",
+    "telefono": "3814340404",
+    "ciudad": "San Miguel de Tucumán",
+    "provincia": "Tucumán",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": true,
+    "ultima_venta": null
+  },
+  {
+    "_id": "C013",
+    "nombre": "Raúl",
+    "apellido": "Domínguez",
+    "dni": "12345678",
+    "email": "raul.d@gmail.com",
+    "telefono": "1145450505",
+    "ciudad": "Quilmes",
+    "provincia": "Buenos Aires",
+    "obra_social": "PAMI",
+    "nro_afiliado": "PA-550211",
+    "activo": true,
+    "ultima_venta": "2025-05-10T00:00:00.000Z"
+  },
+  {
+    "_id": "C015",
+    "nombre": "Joaquín",
+    "apellido": "Funes",
+    "dni": "36456789",
+    "email": "joaquin.f@gmail.com",
+    "telefono": "2994670707",
+    "ciudad": "Neuquén",
+    "provincia": "Neuquén",
+    "obra_social": "Sin cobertura",
+    "nro_afiliado": null,
+    "activo": false,
+    "ultima_venta": null
+  },
+  {
+    "_id": "C018",
+    "nombre": "Daniela",
+    "apellido": "Ferreyra",
+    "dni": "40234567",
+    "email": "dani.f@gmail.com",
+    "telefono": "3515901010",
+    "ciudad": "Córdoba",
+    "provincia": "Córdoba",
+    "obra_social": "Galeno",
+    "nro_afiliado": "GA-771920",
+    "activo": true,
     "ultima_venta": null
   }
 ]
