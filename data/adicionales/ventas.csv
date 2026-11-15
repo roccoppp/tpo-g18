@@ -3,3 +3,9 @@ V017,C005,F001,,2026-11-02,Venta libre,Efectivo,5000,Completada
 V018,C002,F005,,2026-11-04,Venta libre,Débito,3500,Completada
 V019,C007,F006,,2026-11-06,Venta libre,Crédito,8400,Completada
 V020,C001,F003,,2026-11-05,Venta libre,Efectivo,2200,Anulada
+V021,C014,F008,,2026-11-08,Venta libre,Débito,9000,Completada
+V022,C016,F009,,2026-11-09,Venta libre,Efectivo,2200,Completada
+V023,C010,F011,RC012,2026-11-12,Con receta,Obra social,5600,Pendiente
+V024,C016,F011,RC015,2026-11-05,Con receta,Obra social,6800,Completada
+V025,C017,F009,,2026-11-10,Venta libre,Crédito,5600,Anulada
+V026,C013,F001,,2025-05-10,Venta libre,Efectivo,3500,Completada
