@@ -7,13 +7,13 @@
 | Integrante | Legajo |
 | ---------- | ------ |
 | Rocco Perrone   | 65628  |
-| TODO       | TODO   |
+| Santiago Neumann | 65718 |
 | TODO       | TODO   |
 | TODO       | TODO   |
 
-**Repositorio:** TODO (link a GitHub)
+**Repositorio:** https://github.com/roccoppp/tpo-g18
 
-> **TODO:** completar la carátula con los integrantes y el link al repositorio (enunciado §5.2).
+> **TODO:** completar los dos integrantes que faltan en la tabla, con su legajo.
 
 ---
 
@@ -33,9 +33,31 @@
 
 ## 1. Introducción
 
-> **TODO:** presentar el problema en dos o tres párrafos: FarmaRed S.A., migración del backoffice desde
-> planillas de cálculo a una arquitectura de persistencia políglota, entidades que se gestionan y
-> alcance de este trabajo (15 consultas y servicios, carga de datos y entorno en Codespaces).
+FarmaRed S.A. es una red de farmacias. Hoy su backoffice funciona sobre planillas de cálculo.
+Este trabajo migra esa gestión a una arquitectura de **persistencia políglota**: dos motores NoSQL
+de paradigmas distintos, MongoDB (documental) y Neo4j (grafos), cada uno donde mejor resuelve el
+problema, y una aplicación en TypeScript que los usa a través de repositorios por dominio.
+
+El sistema gestiona proveedores, sucursales, productos, lotes de stock, clientes, farmacéuticos,
+recetas y ventas con sus ítems. MongoDB es la base central: guarda las entidades que participan en
+las escrituras que deben ser consistentes (ventas, recetas, stock y clientes). Neo4j guarda como grafo
+las entidades que se consultan recorriendo relaciones, y es la única copia de los datos de referencia
+que ningún servicio modifica (proveedores, sucursales y farmacéuticos).
+
+El alcance del trabajo es:
+
+- **15 consultas y servicios** (q01 a q15): 12 de lectura y 3 servicios de escritura (q13, ABM de
+  clientes; q14, registro de una venta; q15, descuento de stock con FEFO), ejecutables con
+  `npm run query -- <n>`.
+- **Carga de datos** idempotente con `npm run seed`, a partir de los CSV provistos y de registros
+  propios que ejercitan los casos borde (§6).
+- **Entorno reproducible** en GitHub Codespaces, con MongoDB (replica set de un nodo, necesario para las
+  transacciones) y Neo4j, verificable con `npm run check`.
+
+El informe está organizado así: la arquitectura y la elección de cada motor (§2), la organización del
+código (§3), el modelo de datos (§4), la integridad referencial (§5), la carga de datos (§6), las
+consultas con ejemplos reales (§7), la consistencia de las escrituras (§8) y las limitaciones y
+conclusiones (§9).
 
 ---
 
@@ -265,13 +287,8 @@ src/
 
 ## 4. Modelo de datos
 
-> **TODO:** describir el modelo en cada motor, con diagramas (enunciado §5.2):
->
-> - **MongoDB:** colecciones, forma de los documentos (qué va embebido y qué va por referencia),
->   índices y por qué.
-> - **Neo4j:** etiquetas, propiedades, relaciones (con su dirección), restricciones e índices, y qué
->   consulta recorre cada relación.
-> - Un diagrama de las entidades y sus relaciones, que indique en qué motor vive cada una.
+Cada entidad vive en el motor que mejor sirve a las consultas y servicios que la usan (§2.4). Esta
+sección describe cómo se modela en cada uno y cierra con un diagrama de conjunto.
 
 ### 4.1 MongoDB
 
@@ -291,7 +308,7 @@ nodo `(:Lote)` de Neo4j es una copia que se actualiza después de confirmarla.
 
 ### 4.2 Neo4j
 
-Relaciones implementadas hasta ahora:
+Relaciones del grafo:
 
 ```text
 (:Producto)-[:PROVISTO_POR]->(:Proveedor)      q01, q08
@@ -315,15 +332,105 @@ Relaciones implementadas hasta ahora:
 Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`, `id_cliente` de las ventas) no son propiedades de los nodos: son
 las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
 
-> **TODO:** agregar el diagrama.
+### 4.3 Diagramas
+
+**Entidades por motor.** Cada recuadro es una entidad. Las flechas son referencias entre entidades:
+en MongoDB, un campo con el id de la otra entidad; en Neo4j, una relación del grafo.
+
+```text
+┌──────────────────────────── MongoDB (base central) ────────────────────────────┐
+│                                                                                 │
+│  clientes            recetas                ventas                              │
+│  _id, dni (único)    _id                    _id                                 │
+│  nombre, email, ...  id_cliente ──────────► id_cliente, id_farmaceutico,        │
+│  obra_social         dispensas_*            id_receta, fecha, tipo, total,      │
+│  activo              proxima_dispensa       estado, stock_descontado            │
+│       ▲              estado                 items[ id_detalle, id_producto,     │
+│       └── id_cliente ──┘                            cantidad, precio_unit ]     │
+│                                                          │                      │
+│  productos                  lotes                        │ id_producto          │
+│  _id, nombre, precio_unit   _id, nro_lote, unidades      ▼                      │
+│  id_proveedor, activo ◄──── id_producto, id_sucursal, vencimiento               │
+│                                                                                 │
+│  contadores: _id (clientes | ventas | detalle_ventas), ultimo                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+        │ copia (productos, lotes,          ▲ id_proveedor, id_sucursal e
+        │ clientes y cabecera de ventas)    │ id_farmaceutico apuntan a nodos de Neo4j
+        ▼                                   │
+┌─────────────────────────────── Neo4j (grafo) ───────────────────────────────────┐
+│                                                                                 │
+│  (:Proveedor)* ◄─[:PROVISTO_POR]─ (:Producto) ◄─[:DE_PRODUCTO]─ (:Lote)         │
+│                                                                    │            │
+│                                                          [:EN_SUCURSAL]         │
+│                                                                    ▼            │
+│  (:Sucursal)* ◄────────────[:TRABAJA_EN]──── (:Farmaceutico)*   (:Sucursal)*    │
+│                                                      ▲                          │
+│                                       [:ATENDIDA_POR]│                          │
+│  (:Cliente) ◄─────────[:DE_CLIENTE]──────────── (:Venta)                        │
+│                                                                                 │
+│  * única copia: la escribe solo la carga (npm run seed)                         │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Las recetas solo viven en MongoDB, y los ítems de cada venta están embebidos en su documento: ninguna
+de las dos cosas tiene nodo en el grafo.
+
+**Venta y sus ítems.** Un único documento de la colección `ventas`:
+
+```text
+ventas
+└── V027
+    ├── id_cliente, id_farmaceutico, id_receta (null en ventas libres)
+    ├── fecha, tipo, medio_pago, total, estado, stock_descontado
+    └── items
+        ├── { id_detalle: D035, id_producto: PRD008, cantidad: 1, precio_unit: ... }
+        └── { ... }                      (cantidad variable de ítems)
+```
 
 ---
 
 ## 5. Integridad referencial
 
-> **TODO:** los motores NoSQL no garantizan integridad referencial, y el enunciado pide documentar cómo
-> se resuelve (§3.3). Explicar qué se valida en la carga (ids únicos, referencias), qué se valida en
-> los servicios de escritura, y qué se resuelve por modelado embebido. Apoyarse en §3.3, puntos 2 y 6.
+Ni MongoDB ni Neo4j verifican por sí solos que una referencia apunte a una entidad que existe: en
+MongoDB un campo `id_cliente` es un valor cualquiera, y en el grafo una relación une nodos que ya
+existen pero no sabe si falta alguno. Por eso la integridad se resuelve en tres niveles.
+
+**1. Modelado embebido.** Los ítems de una venta están dentro de su documento, así que no puede haber
+un ítem sin venta ni una venta con ítems de otra. Es la única referencia que se evita por completo en
+lugar de validarla.
+
+**2. Validación en la carga (`npm run seed`).** Antes de escribir en cualquier motor, el script
+comprueba todo en memoria (§6.1):
+
+- ids únicos en cada entidad, y DNI y matrículas únicos;
+- que cada referencia exista: producto → proveedor, lote → producto y sucursal, receta → cliente,
+  venta → cliente, farmacéutico y receta, ítem → producto y venta, farmacéutico → sucursal;
+- unidades de lote no negativas y que el total de cada venta sea igual a la suma de cantidad por
+  precio de sus ítems.
+
+Si una fila no pasa, el script termina con un error que indica fila y regla, y no modifica ningún
+dato. Además, cuando escribe en el grafo productos, lotes, farmacéuticos y ventas, el repositorio
+cuenta las relaciones que creó: si alguna no encontró su nodo, aborta la transacción de Neo4j y el
+grafo queda como estaba (§3.3, punto 6).
+
+**3. Validación en los servicios de escritura.** Los servicios validan a través de los repositorios
+antes de escribir:
+
+- **q13** rechaza un DNI repetido, incluso el de un cliente dado de baja (además del índice único de
+  MongoDB sobre `dni`), valida el formato de los datos (DNI, email, teléfono, afiliado según la obra
+  social) y en una modificación solo admite cambiar email, teléfono, obra social y número de afiliado:
+  el DNI no se modifica. La baja es lógica (`activo: false`): el cliente sigue existiendo para sus
+  ventas y recetas.
+- **q14** exige que el cliente exista y esté activo; que el farmacéutico esté activo y trabaje en una
+  sucursal de tipo 'Farmacia'; que cada producto exista y no esté discontinuado; y que la receta
+  pertenezca al cliente y esté vigente. Después, el stock vigente tiene que alcanzar (§8).
+- **q15** exige que la venta exista, esté 'Completada', no tenga el stock descontado y que el stock
+  vigente de la sucursal alcance para cada ítem.
+
+Las operaciones que escriben varias entidades en MongoDB (q14 y q15) lo hacen dentro de una
+transacción, por lo que una validación que falla en medio de la operación descarta todo lo escrito
+(§8). El caso que no cubre la transacción es la copia en Neo4j: se escribe después de confirmar, y
+si falla se reconstruye con `npm run sync` (§3.3, punto 3).
 
 ---
 
@@ -2359,14 +2466,57 @@ transacción es la opción más simple y con garantías más fuertes.
 
 ### 9.1 Limitaciones
 
-> **TODO**
+- **Las copias de Neo4j pueden quedar desfasadas.** Neo4j no participa en las transacciones de MongoDB
+  (§2.3): la copia se escribe después de confirmar. Si esa escritura falla, la venta y el stock ya
+  están confirmados y las consultas que leen el grafo, como q08, muestran datos viejos hasta correr
+  `npm run sync`. No hay una reconciliación automática.
+- **`npm run seed` descarta lo escrito por los servicios.** Como la carga reemplaza cada entidad
+  completa (§6.1), las altas de cliente y las ventas registradas con q13 y q14 se pierden al volver a
+  cargar. Es el costo de que sea idempotente.
+- **Los ids de los contadores pueden tener huecos.** Se piden fuera de la transacción: un alta de
+  cliente o una venta rechazada deja un número sin usar (§8).
+- **Las fechas de los registros adicionales son fijas.** Las consultas calculan "hoy" con la fecha del
+  sistema: pasado noviembre de 2026, q11 no encuentra ventas del mes y los lotes próximos a vencer ya
+  estarán vencidos (§6.2).
+- **Entorno de un solo nodo.** El replica set `rs0` tiene un único nodo, suficiente para tener
+  transacciones, pero sin tolerancia a fallas. Neo4j tampoco está en cluster.
+- **Datos de referencia sin servicio de escritura.** Proveedores, sucursales y farmacéuticos solo se
+  modifican con la carga: cambiar uno requiere editar el CSV y volver a cargar.
+- **Los repositorios exponen operaciones a medida.** Una consulta nueva puede requerir un método
+  nuevo (§3.4).
 
 ### 9.2 Alternativas evaluadas
 
-> **TODO:** por ejemplo, otros motores considerados (Redis como almacén clave-valor para datos de
-> referencia y rankings, columnar para reportes) y por qué no se eligieron; modelados alternativos
-> (detalle de venta embebido o en colección aparte, entre otros).
+- **Todo en MongoDB, sin Neo4j.** Es posible resolver las consultas con `$lookup`, y habría una sola
+  base y ninguna copia que mantener. Elegimos sumar Neo4j porque varias consultas (q01, q02, q05, q08,
+  q10, q12) son recorridos de relaciones que en el grafo se escriben como un patrón y se resuelven en
+  el motor en un viaje (§2.3), y porque el enunciado pide persistencia políglota.
+- **Todo en Neo4j, sin MongoDB.** Evitaría las copias, pero las ventas con ítems de cantidad variable
+  encajan mejor en un documento, y q14 y q15 necesitan una transacción sobre ventas, recetas y stock
+  con actualizaciones atómicas condicionadas, que resolvemos en un único motor con MongoDB (§2.2,
+  puntos 4 y 5).
+- **Redis (clave-valor).** Sirve para datos de referencia y rankings, pero accede solo por clave: las
+  consultas por cliente, estado o rango de fechas obligarían a mantener a mano un índice por cada
+  criterio (§2.2, punto 2).
+- **Un motor columnar para reportes.** Los reportes (q04, q05, q07, q11) trabajan con el volumen de
+  una red de farmacias y se resuelven con *aggregation pipelines*; un motor columnar sumaría un tercer
+  sistema que mantener sin una necesidad clara.
+- **Detalle de venta en una colección aparte.** Evita documentos grandes, pero obliga a leer y
+  escribir en dos lugares cada venta y a mantener la consistencia entre ellos. Con una cantidad
+  acotada de ítems por venta, preferimos embebido (§4.1).
+- **Descontar el stock después de registrar la venta, con compensaciones.** Deja ventanas con datos
+  inconsistentes y requiere deshacer a mano; descartada a favor de la transacción de MongoDB (§8).
 
 ### 9.3 Conclusiones
 
-> **TODO**
+La persistencia políglota nos permitió asignar cada entidad al motor que mejor resuelve sus consultas:
+MongoDB como base central, con transacciones ACID para las escrituras que deben ser consistentes, y
+Neo4j para las consultas que recorren relaciones. El costo es mantener copias de algunas entidades en
+los dos motores, y lo acotamos con una organización del código por dominio: un único tipo por entidad
+y un único repositorio que escribe siempre primero en MongoDB y después en Neo4j (§3).
+
+Los puntos más importantes del diseño son la transacción que une q14 y q15 (§8), que evita ventas sin
+descuento de stock, la validación completa de los datos antes de cargar (§5 y §6) y la carga
+idempotente, que permite reconstruir el entorno en cualquier momento. Como mejora a futuro, la
+reconciliación automática de las copias de Neo4j y un servicio de escritura para los datos de
+referencia cerrarían las limitaciones más relevantes.
