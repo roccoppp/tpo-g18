@@ -1,0 +1,11 @@
+id_producto,nombre,principio_activo,categoria,presentacion,condicion_venta,precio_unit,id_proveedor,activo
+PRD014,Diclofenac 50mg x20,Diclofenac,Antiinflamatorio,Comprimidos x20,Venta libre,3100,PRV006,True
+PRD015,Enalapril 10mg x30,Enalapril,Antihipertensivo,Comprimidos x30,Bajo receta,4200,PRV007,True
+PRD016,Clonazepam 0.5mg x30,Clonazepam,Ansiolítico,Comprimidos x30,Bajo receta archivada,6800,PRV008,True
+PRD017,Insulina NPH 100UI/ml,Insulina humana,Antidiabético,Frasco ampolla 10 ml,Bajo receta,15400,PRV009,True
+PRD018,Ibuprofeno pediátrico 100mg/5ml,Ibuprofeno,Antiinflamatorio,Suspensión 120 ml,Venta libre,3900,PRV010,True
+PRD019,Vitamina C 1g x10,Ácido ascórbico,Suplemento,Comprimidos efervescentes x10,Venta libre,2600,PRV011,True
+PRD020,Ketorolac 10mg x10,Ketorolac,Analgésico,Comprimidos x10,Bajo receta,4500,PRV013,False
+PRD021,Azitromicina 500mg x3,Azitromicina,Antibiótico,Comprimidos x3,Bajo receta,8200,PRV014,True
+PRD022,Pantoprazol 40mg x28,Pantoprazol,Gastroprotector,Comprimidos x28,Bajo receta,5600,PRV006,True
+PRD023,Termómetro digital,No aplica,Dispositivo médico,Unidad,Venta libre,5200,PRV012,True
