@@ -272,16 +272,81 @@ src/
 - Cada repositorio expone operaciones a medida de las consultas que lo usan, no un CRUD genérico, así
   que una consulta nueva puede requerir un método nuevo en el repositorio.
 
-> **TODO (nota para quien continúe el informe):** en una próxima versión vamos a agregar **ejemplos
-> concretos** de lo descrito en esta sección. Algunos candidatos:
->
-> - un tipo de dominio guardado en los dos motores, con el método del repositorio que escribe en ambos
->   y en qué orden;
-> - la conversión en el borde (`aNodo`/`productoDesdeNodo` en `src/productos/repository.ts`);
-> - el error de compilación que aparece al agregar un campo al tipo sin actualizar las conversiones;
-> - una escritura rechazada por una referencia inválida.
->
-> Hasta entonces, esta sección describe la decisión sin ejemplos.
+### 3.5 Ejemplos
+
+Los ejemplos siguientes salen del código del proyecto (`src/productos/repository.ts`).
+
+**Un dominio guardado en los dos motores, y el orden de escritura.** Los productos viven en MongoDB
+(fuente de verdad) y tienen una copia en Neo4j. El método que reemplaza el catálogo en la carga
+escribe en ese orden:
+
+```ts
+async reemplazarTodos(productos: Producto[]): Promise<void> {
+  await this.coleccion.deleteMany({});
+  if (productos.length > 0) await this.coleccion.insertMany(productos);
+  await this.copiarAlGrafo(productos);
+}
+```
+
+Primero se escribe MongoDB y después la copia en Neo4j. Si falla el segundo paso, MongoDB ya quedó
+escrito y la copia se reconstruye con `npm run sync` (`reconstruirCopia`), que lee los productos de
+MongoDB y vuelve a escribir el grafo.
+
+**Conversión en el borde.** El tipo `Producto` tiene `id_proveedor`, pero en el grafo ese dato no es una
+propiedad: es la relación `PROVISTO_POR`. El repositorio hace la conversión en las dos direcciones, y
+el resto de la aplicación solo ve el tipo `Producto`. Al escribir, `aNodo` arma las propiedades del
+nodo y envía `precio_unit` como entero de Neo4j (JavaScript no distingue enteros de decimales):
+
+```ts
+function aNodo(producto: Producto) {
+  return {
+    id_producto: producto._id,
+    nombre: producto.nombre,
+    /* ... resto de las propiedades ... */
+    precio_unit: neo4j.int(producto.precio_unit),
+    activo: producto.activo,
+  };
+}
+```
+
+Al leer, `productoDesdeNodo` reconstruye `id_proveedor` a partir de la relación que recorrió la consulta:
+
+```ts
+export function productoDesdeNodo(nodo: Node, idProveedor: string): Producto {
+  const p = nodo.properties;
+  return {
+    _id: p.id_producto,
+    nombre: p.nombre,
+    /* ... resto de las propiedades ... */
+    id_proveedor: idProveedor,
+    activo: p.activo,
+  };
+}
+```
+
+**Un campo nuevo en el tipo.** `productoDesdeNodo` declara que devuelve un `Producto`. Si se agrega un
+campo obligatorio al tipo en `types.ts` (por ejemplo, `fabricante: string`) y no se agrega a la
+conversión, TypeScript marca el `return` como error de compilación porque falta una propiedad
+requerida (error TS2741). La diferencia entre el tipo y su conversión se detecta al compilar, antes
+de ejecutar nada.
+
+**Una escritura rechazada por una referencia inválida.** Al copiar los productos al grafo, la
+consulta de Cypher crea cada relación `PROVISTO_POR` y devuelve cuántos productos encontraron su
+proveedor. El repositorio compara ese número con la cantidad de productos que intentó escribir:
+
+```ts
+const relacionados: number = records[0].get("relacionados");
+if (relacionados !== productos.length) {
+  throw new Error(
+    `Neo4j: solo ${relacionados} de ${productos.length} productos encontraron su proveedor`,
+  );
+}
+```
+
+Si un producto apunta a un proveedor que no existe, el error aborta la transacción de Neo4j y el
+grafo queda como estaba: ningún producto queda sin su relación. En el uso normal esta situación no se
+da, porque `npm run seed` ya validó antes todas las referencias (§5). Es una segunda barrera dentro
+del repositorio.
 
 ---
 
@@ -484,11 +549,11 @@ lotes marcados como próximos a vencer ya estarán vencidos.
 
 ## 7. Consultas y servicios
 
-> **TODO:** para cada consulta incluir el enunciado, el motor o los motores, cómo se resuelven las
-> relaciones (embebido, referencia, combinación en la aplicación, etc.), el código o la sentencia, y
-> al menos un ejemplo de resultado. Los ejemplos tienen que ser salidas reales de
-> `npm run query -- <n>`. Para 13, 14 y 15 mostrar además el estado de los datos antes y después, y
-> al menos un caso de rechazo por validación.
+Para cada consulta y servicio se indica el motor o los motores, cómo se resuelven las relaciones, el
+código o la sentencia y un ejemplo de resultado. Los ejemplos son salidas reales de
+`npm run query -- <n>` sobre los datos de `npm run seed` (provistos más adicionales, §6), ejecutadas el
+15/11/2026. Para q13, q14 y q15 se muestra además el estado de los datos antes y después, y casos de
+rechazo por validación.
 
 ### Q01: Productos activos con todos los datos de su proveedor
 
@@ -498,9 +563,89 @@ lotes marcados como próximos a vencer ya estarán vencidos.
   `(:Producto {activo: true})-[:PROVISTO_POR]->(:Proveedor)`, resuelto en el servidor en un viaje.
   El repositorio de productos reconstruye `id_proveedor` a partir de la relación.
 
-**Código:** TODO
+**Código** (`ProductosRepository.activosConProveedor`, en `src/productos/repository.ts`):
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (p:Producto {activo: true})-[:PROVISTO_POR]->(pr:Proveedor)
+RETURN p, pr
+ORDER BY p.id_producto
+```
+
+La función `q01ProductosActivosConProveedor` (`src/queries/q01.ts`) solo llama al repositorio y une cada
+producto con su proveedor en un único objeto.
+
+**Ejemplo de resultado** (`npm run query -- 1`). Devuelve los 20 productos activos (quedan afuera
+PRD012, PRD013 y PRD020, que no están activos). Extracto con tres de ellos: PRD001 y PRD003, de los
+datos provistos, y PRD023, adicional, cuyo proveedor está inactivo (`activo: false`) y que, aun así,
+aparece porque la consulta filtra por producto activo y no por proveedor:
+
+```json
+[
+  {
+    "_id": "PRD001",
+    "nombre": "Paracetamol 500mg x30",
+    "principio_activo": "Paracetamol",
+    "categoria": "Analgésico",
+    "presentacion": "Comprimidos x30",
+    "condicion_venta": "Venta libre",
+    "precio_unit": 2800,
+    "id_proveedor": "PRV001",
+    "activo": true,
+    "proveedor": {
+      "id_proveedor": "PRV001",
+      "razon_social": "Laboratorios Andinos S.A.",
+      "cuit": "30-71234567-1",
+      "tipo": "Laboratorio",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "telefono": "1143001100",
+      "activo": true
+    }
+  },
+  {
+    "_id": "PRD003",
+    "nombre": "Amoxicilina 500mg x21",
+    "principio_activo": "Amoxicilina",
+    "categoria": "Antibiótico",
+    "presentacion": "Cápsulas x21",
+    "condicion_venta": "Bajo receta",
+    "precio_unit": 9800,
+    "id_proveedor": "PRV003",
+    "activo": true,
+    "proveedor": {
+      "id_proveedor": "PRV003",
+      "razon_social": "FarmaLitoral S.A.",
+      "cuit": "30-71555222-9",
+      "tipo": "Laboratorio",
+      "ciudad": "Rosario",
+      "provincia": "Santa Fe",
+      "telefono": "3414203300",
+      "activo": true
+    }
+  },
+  {
+    "_id": "PRD023",
+    "nombre": "Termómetro digital",
+    "principio_activo": "No aplica",
+    "categoria": "Dispositivo médico",
+    "presentacion": "Unidad",
+    "condicion_venta": "Venta libre",
+    "precio_unit": 5200,
+    "id_proveedor": "PRV012",
+    "activo": true,
+    "proveedor": {
+      "id_proveedor": "PRV012",
+      "razon_social": "Sierras Farma S.A.",
+      "cuit": "30-71333444-5",
+      "tipo": "Laboratorio",
+      "ciudad": "Villa Carlos Paz",
+      "provincia": "Córdoba",
+      "telefono": "3541003030",
+      "activo": false
+    }
+  }
+]
+```
 
 ### Q02: Ventas 'Pendiente' con el farmacéutico asignado (nombre, matrícula y sucursal) y el total
 
@@ -1274,9 +1419,145 @@ puesto:
   (`Expand`). Las unidades se leen de la copia del grafo: q15 la actualiza después de confirmar cada
   descuento de stock en MongoDB (§8).
 
-**Código:** TODO
+**Código** (`LotesRepository.conMenosUnidadesQue`, en `src/lotes/repository.ts`, con `$limite` = 50):
 
-**Ejemplo de resultado:** TODO
+```cypher
+MATCH (l:Lote)-[:DE_PRODUCTO]->(p:Producto)-[:PROVISTO_POR]->(pr:Proveedor),
+      (l)-[:EN_SUCURSAL]->(s:Sucursal)
+WHERE l.unidades < $limite
+RETURN l, p, s, pr
+ORDER BY l.id_lote
+```
+
+La función `q08LotesConStockBajo` (`src/queries/q08.ts`) fija el umbral en 50 unidades y combina cada
+lote con su producto, su sucursal y su proveedor en un único objeto.
+
+**Ejemplo de resultado** (`npm run query -- 8`). Devuelve 14 lotes. La consulta filtra solo por
+unidades, así que incluye también lotes que ya vencieron. Extracto con tres: L003 (18 unidades, vence
+el 15/12/2026), L012 (30 unidades, vencido el 31/10/2026) y L018 (15 unidades, de un producto inactivo,
+vencido el 30/09/2026):
+
+```json
+[
+  {
+    "_id": "L003",
+    "id_producto": "PRD001",
+    "id_sucursal": "S003",
+    "nro_lote": "L-2412B",
+    "unidades": 18,
+    "vencimiento": "2026-12-15T00:00:00.000Z",
+    "producto": {
+      "_id": "PRD001",
+      "nombre": "Paracetamol 500mg x30",
+      "principio_activo": "Paracetamol",
+      "categoria": "Analgésico",
+      "presentacion": "Comprimidos x30",
+      "condicion_venta": "Venta libre",
+      "precio_unit": 2800,
+      "id_proveedor": "PRV001",
+      "activo": true
+    },
+    "sucursal": {
+      "id_sucursal": "S003",
+      "nombre": "Farmacia Rosario Centro",
+      "tipo": "Farmacia",
+      "direccion": "Calle Córdoba 1420",
+      "ciudad": "Rosario",
+      "provincia": "Santa Fe",
+      "telefono": "3414003003",
+      "activo": true
+    },
+    "proveedor": {
+      "id_proveedor": "PRV001",
+      "razon_social": "Laboratorios Andinos S.A.",
+      "cuit": "30-71234567-1",
+      "tipo": "Laboratorio",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "telefono": "1143001100",
+      "activo": true
+    }
+  },
+  {
+    "_id": "L012",
+    "id_producto": "PRD010",
+    "id_sucursal": "S002",
+    "nro_lote": "L-2505F",
+    "unidades": 30,
+    "vencimiento": "2026-10-31T00:00:00.000Z",
+    "producto": {
+      "_id": "PRD010",
+      "nombre": "Salbutamol aerosol 100mcg",
+      "principio_activo": "Salbutamol",
+      "categoria": "Broncodilatador",
+      "presentacion": "Aerosol 200 dosis",
+      "condicion_venta": "Bajo receta",
+      "precio_unit": 7100,
+      "id_proveedor": "PRV001",
+      "activo": true
+    },
+    "sucursal": {
+      "id_sucursal": "S002",
+      "nombre": "Farmacia Belgrano",
+      "tipo": "Farmacia",
+      "direccion": "Av. Cabildo 2150",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "telefono": "1148002002",
+      "activo": true
+    },
+    "proveedor": {
+      "id_proveedor": "PRV001",
+      "razon_social": "Laboratorios Andinos S.A.",
+      "cuit": "30-71234567-1",
+      "tipo": "Laboratorio",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "telefono": "1143001100",
+      "activo": true
+    }
+  },
+  {
+    "_id": "L018",
+    "id_producto": "PRD012",
+    "id_sucursal": "S002",
+    "nro_lote": "L-2301Z",
+    "unidades": 15,
+    "vencimiento": "2026-09-30T00:00:00.000Z",
+    "producto": {
+      "_id": "PRD012",
+      "nombre": "Alcohol en gel 250ml",
+      "principio_activo": "Alcohol etílico 70%",
+      "categoria": "Antiséptico",
+      "presentacion": "Solución 250 ml",
+      "condicion_venta": "Venta libre",
+      "precio_unit": 1800,
+      "id_proveedor": "PRV002",
+      "activo": false
+    },
+    "sucursal": {
+      "id_sucursal": "S002",
+      "nombre": "Farmacia Belgrano",
+      "tipo": "Farmacia",
+      "direccion": "Av. Cabildo 2150",
+      "ciudad": "Buenos Aires",
+      "provincia": "Buenos Aires",
+      "telefono": "1148002002",
+      "activo": true
+    },
+    "proveedor": {
+      "id_proveedor": "PRV002",
+      "razon_social": "DroguMed S.R.L.",
+      "cuit": "30-70987654-3",
+      "tipo": "Droguería",
+      "ciudad": "Córdoba",
+      "provincia": "Córdoba",
+      "telefono": "3514102200",
+      "activo": true
+    }
+  }
+]
+```
 
 ### Q09: Ventas 'Venta libre' con total menor a $5.000 (sin anuladas)
 
