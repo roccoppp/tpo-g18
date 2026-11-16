@@ -101,8 +101,10 @@ Elegimos el motor central según las características del negocio que pide consi
    admite índices secundarios, simples y compuestos, sobre cualquier campo. Un almacén clave-valor solo accede por clave: cada uno de esos criterios
    obligaría a mantener a mano un índice aparte.
 3. **Reportes agregados.** Los totales por farmacéutico, los rankings de productos y los conteos por
-   período (q04, q05, q07, q11) se expresan como *aggregation pipelines* (`$match`, `$group`, `$sort`,
-   `$lookup`). Se ejecutan en el servidor y solo devuelven el resultado.
+   cliente (q04, q07, q11) se expresan como *aggregation pipelines* (`$match`, `$group`, `$sort`,
+   `$lookup`). Se ejecutan en el servidor y solo devuelven el resultado. El conteo de ventas por
+   farmacéutico de q05 se resuelve en Neo4j, porque tiene que incluir a los farmacéuticos sin ventas,
+   que solo están en el grafo (§2.3).
 4. **Consistencia en escrituras de varias entidades.** El servicio de registro de venta (q14) y el de
    descuento de stock (q15) tienen que funcionar juntos: si el descuento de stock falla, no puede quedar
    ni la venta registrada ni la receta modificada. MongoDB ofrece transacciones ACID sobre varios
@@ -2827,7 +2829,8 @@ transacción es la opción más simple y con garantías más fuertes.
   consultas por cliente, estado o rango de fechas obligarían a mantener a mano un índice por cada
   criterio (§2.2, punto 2).
 - **Un motor columnar para reportes.** Los reportes (q04, q05, q07, q11) trabajan con el volumen de
-  una red de farmacias y se resuelven con *aggregation pipelines*; un motor columnar sumaría un tercer
+  una red de farmacias y se resuelven con *aggregation pipelines* (q04, q07, q11) o con una
+  agregación sobre el grafo (q05); un motor columnar sumaría un tercer
   sistema que mantener sin una necesidad clara.
 - **Detalle de venta en una colección aparte.** Evita documentos grandes, pero obliga a leer y
   escribir en dos lugares cada venta y a mantener la consistencia entre ellos. Con una cantidad
