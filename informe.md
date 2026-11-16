@@ -4,16 +4,14 @@
 
 **Grupo:** 18
 
-| Integrante | Legajo |
-| ---------- | ------ |
-| Rocco Perrone   | 65628  |
-| Santiago Neumann | 65718 |
-| TODO       | TODO   |
-| TODO       | TODO   |
+| Integrante       | Legajo |
+| ---------------- | ------ |
+| Rocco Perrone    | 65628  |
+| Santiago Neumann | 65718  |
+| Jonas Glaubart   | 65790  |
+| Franco Pampuri   | 65552  |
 
 **Repositorio:** https://github.com/roccoppp/tpo-g18
-
-> **TODO:** completar los dos integrantes que faltan en la tabla, con su legajo.
 
 ---
 
