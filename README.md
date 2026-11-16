@@ -93,11 +93,11 @@ Uso de q13 (los campos van como `campo=valor`; un valor vacío, como `nro_afilia
 ```bash
 npm run query -- 13 alta nombre=Valentina apellido=Sosa dni=41222333 email=vale.sosa@gmail.com \
   telefono=1145990011 ciudad="La Plata" provincia="Buenos Aires" obra_social=OSDE nro_afiliado=OS-412233
-npm run query -- 13 modificar C009 email=valentina.sosa@outlook.com obra_social="Sin cobertura" nro_afiliado=
-npm run query -- 13 baja C009
+npm run query -- 13 modificar C019 email=valentina.sosa@outlook.com obra_social="Sin cobertura" nro_afiliado=
+npm run query -- 13 baja C019
 ```
 
-El alta recibe todos los campos menos el id, que se asigna solo. La modificación acepta `email`, `telefono`, `obra_social` y `nro_afiliado`. Cada operación imprime el cliente antes y después. Si una validación no pasa, imprime `Rechazado: <motivo>` y termina con código 1.
+El alta recibe todos los campos menos el id, que se asigna solo (después de `npm run seed`, el primero es C019). La modificación acepta `email`, `telefono`, `obra_social` y `nro_afiliado`. Cada operación imprime el cliente antes y después. Si una validación no pasa, imprime `Rechazado: <motivo>` y termina con código 1.
 
 Uso de q14 (cada ítem va como `id_producto:cantidad`; la receta, solo si algún producto la requiere):
 
