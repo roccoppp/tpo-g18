@@ -2799,6 +2799,14 @@ ningún servicio los modifica (§2.3), así que no pueden cambiar entre la valid
 - **Doble descuento de una venta.** La marca `stock_descontado` se escribe en la misma transacción
   que el descuento, con un filtro que exige que todavía esté en `false`. Una venta registrada con q14
   ya queda marcada, y q15 la rechaza si se ejecuta sobre ella.
+- **Copias en Neo4j.** Las copias se escriben fuera de la transacción, así que dos ventas confirmadas
+  en un orden pueden escribir sus copias en el orden inverso. Las unidades de un lote solo bajan (las
+  modifica únicamente el descuento de q15), así que la copia se queda con el menor valor entre el que
+  tiene el nodo y el recibido
+  (`SET l.unidades = CASE WHEN fila.unidades < l.unidades THEN fila.unidades ELSE l.unidades END`):
+  el resultado no depende del orden de llegada ni de repetir una copia. En una prueba, copiar 5, 6 y
+  5 unidades de L010, en ese orden, dejó el nodo en 5. Con el mismo criterio, la copia de una receta
+  no se reemplaza por una versión con menos dispensas realizadas.
 
 **Alternativas descartadas.** Escribir primero la venta y descontar después el stock con
 compensaciones (borrar la venta y revertir la receta si el descuento falla) dejaría ventanas en las
@@ -2814,8 +2822,11 @@ transacción es la opción más simple y con garantías más fuertes.
 
 - **Las copias de Neo4j pueden quedar desfasadas.** Neo4j no participa en las transacciones de MongoDB
   (§2.3): la copia se escribe después de confirmar. Si esa escritura falla, la venta y el stock ya
-  están confirmados y las consultas que leen el grafo, como q08, muestran datos viejos hasta correr
-  `npm run sync`. No hay una reconciliación automática.
+  están confirmados y las consultas que leen el grafo, como q03 y q08, muestran datos viejos hasta
+  correr `npm run sync`. No hay una reconciliación automática. Las copias de lotes y recetas toleran
+  que dos escrituras lleguen en otro orden (§8); la de un cliente no: si dos modificaciones del mismo
+  cliente se confirman casi a la vez y sus copias llegan en el orden inverso, el nodo queda con la
+  anterior hasta `npm run sync`.
 - **`npm run seed` descarta lo escrito por los servicios.** Como la carga reemplaza cada entidad
   completa (§6.1), las altas de cliente y las ventas registradas con q13 y q14 se pierden al volver a
   cargar. Es el costo de que sea idempotente.

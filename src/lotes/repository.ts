@@ -95,6 +95,11 @@ export class LotesRepository {
    * Actualiza las unidades de estos lotes en la copia de Neo4j, en una única transacción. Se llama
    * después de confirmar el descuento en MongoDB: si falla, MongoDB ya quedó escrito y la copia se
    * reconstruye con `npm run sync`.
+   *
+   * Las unidades de un lote solo bajan (el único servicio que las modifica es el descuento de q15),
+   * así que el nodo se queda con el menor valor entre el que tiene y el recibido. Si dos ventas
+   * descuentan del mismo lote y sus copias llegan en el orden inverso al de sus confirmaciones, la
+   * copia igual termina en el valor de MongoDB; y repetir una copia no cambia el resultado.
    */
   async copiarUnidades(lotes: Lote[]): Promise<void> {
     try {
@@ -102,7 +107,7 @@ export class LotesRepository {
         const { records } = await tx.run(
           `UNWIND $lotes AS fila
            MATCH (l:Lote {id_lote: fila.id_lote})
-           SET l.unidades = fila.unidades
+           SET l.unidades = CASE WHEN fila.unidades < l.unidades THEN fila.unidades ELSE l.unidades END
            RETURN count(l) AS actualizados`,
           { lotes: lotes.map((lote) => ({ id_lote: lote._id, unidades: neo4j.int(lote.unidades) })) },
         );
