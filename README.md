@@ -37,11 +37,11 @@ Carga los CSV de `data/provistos/` y, si existen, los registros adicionales de `
 | productos   | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)` |
 | stock_lotes | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `-[:DE_PRODUCTO]->(:Producto)` y `-[:EN_SUCURSAL]->(:Sucursal)` |
 | farmaceuticos | Neo4j                  | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                |
-| recetas     | MongoDB                  | colección `recetas` (`_id` = id_receta)                                          |
+| recetas     | MongoDB + copia en Neo4j | colección `recetas` (`_id` = id_receta); nodo `(:Receta)-[:EMITIDA_PARA]->(:Cliente)` |
 | clientes    | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente, índice único sobre `dni`); nodo `(:Cliente)` |
-| ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)` y `-[:DE_CLIENTE]->(:Cliente)` |
+| ventas y detalle_ventas | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta, ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)`, `-[:DE_CLIENTE]->(:Cliente)`, `-[:CON_RECETA]->(:Receta)` y un `-[:INCLUYE {id_detalle, cantidad, precio_unit}]->(:Producto)` por ítem |
 
-MongoDB es la fuente de verdad de productos, lotes, clientes y ventas: la copia en Neo4j se escribe después. La colección `contadores` guarda el último número de id asignado a cada entidad, para las altas.
+MongoDB es la fuente de verdad de productos, lotes, clientes, recetas y ventas: la copia en Neo4j se escribe después. La colección `contadores` guarda el último número de id asignado a cada entidad, para las altas.
 
 ## Reconstruir las copias de Neo4j
 

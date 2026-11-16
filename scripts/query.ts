@@ -32,8 +32,7 @@ type Consulta = (repos: Repositorios, args: string[]) => Promise<unknown>;
 const consultas: Record<number, Consulta> = {
   1: ({ productos }) => q01ProductosActivosConProveedor(productos),
   2: ({ ventas }) => q02VentasPendientesConFarmaceutico(ventas),
-  3: ({ clientes, ventas, recetas }, args) =>
-    q03HistorialCliente(clientes, ventas, recetas, parametro(args, 0, "id_cliente")),
+  3: ({ clientes }, args) => q03HistorialCliente(clientes, parametro(args, 0, "id_cliente")),
   4: ({ recetas }) => q04ClientesConVariasRecetas(recetas),
   5: ({ farmaceuticos }) => q05FarmaceuticosConVentasRecientes(farmaceuticos),
   6: ({ recetas }) => q06RecetasProlongadasAtrasadas(recetas),

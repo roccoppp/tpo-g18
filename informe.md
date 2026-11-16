@@ -96,9 +96,9 @@ Elegimos el motor central según las características del negocio que pide consi
 1. **Estructura jerárquica.** Una venta tiene una cabecera e ítems de cantidad variable. El modelo
    documental permite representar una estructura así en un único documento. Ese documento se lee y se
    escribe completo en una sola operación, sin reconstruirlo a partir de varias tablas o claves.
-2. **Consultas por atributos.** Ventas, recetas y clientes se consultan por cliente, por farmacéutico,
-   por estado y por rango de fechas. MongoDB admite índices secundarios, simples y compuestos, sobre
-   cualquier campo. Un almacén clave-valor solo accede por clave: cada uno de esos criterios
+2. **Consultas por atributos.** Ventas, recetas y clientes se filtran por sus atributos: estado y rango
+   de fechas (q07, q11), tipo y total (q09), tipo, estado y próxima dispensa (q06), DNI (q13). MongoDB
+   admite índices secundarios, simples y compuestos, sobre cualquier campo. Un almacén clave-valor solo accede por clave: cada uno de esos criterios
    obligaría a mantener a mano un índice aparte.
 3. **Reportes agregados.** Los totales por farmacéutico, los rankings de productos y los conteos por
    período (q04, q05, q07, q11) se expresan como *aggregation pipelines* (`$match`, `$group`, `$sort`,
@@ -125,6 +125,7 @@ se definen directamente como un recorrido de relaciones:
 
 - q01: producto con su proveedor.
 - q02: venta con su farmacéutico y la sucursal del farmacéutico.
+- q03: historial de un cliente: sus recetas y sus ventas, con los productos de cada venta.
 - q05: farmacéuticos con la cantidad de ventas que atendieron, incluidos los que no atendieron ninguna.
 - q08: lote con su producto, su sucursal y el proveedor del producto.
 - q10: clientes de una sucursal, a través del farmacéutico que atendió la venta.
@@ -137,32 +138,38 @@ sucursal) es una relación con nombre propio. Para este tipo de consulta, Neo4j 
    `(:Lote)-[:DE_PRODUCTO]->(:Producto)-[:PROVISTO_POR]->(:Proveedor)` más
    `(:Lote)-[:EN_SUCURSAL]->(:Sucursal)`. Los patrones opcionales (`OPTIONAL MATCH`, que cuenta los
    ceros de q05) y los negados (`NOT EXISTS`, para q12) se expresan igual de directo.
-2. **El recorrido completo se resuelve en el servidor, en un viaje.** Desde cada nodo, Neo4j sigue
-   sus relaciones directamente hasta los nodos vecinos. La aplicación no tiene que pedir una entidad,
-   juntar los ids de sus referencias y volver a pedir las entidades relacionadas: q08 se resuelve en
-   un solo viaje, cuando combinando en la aplicación necesitaría tres (lotes, sus productos y, al
-   final, sucursales y proveedores).
+2. **La red cliente–receta–venta–producto está modelada como tal.** El enunciado (§3.2) describe
+   estas relaciones como algo que se recorre en las consultas de historial. En el grafo cada una es
+   una relación: `(:Receta)-[:EMITIDA_PARA]->(:Cliente)`, `(:Venta)-[:DE_CLIENTE]->(:Cliente)`,
+   `(:Venta)-[:CON_RECETA]->(:Receta)` y `(:Venta)-[:INCLUYE]->(:Producto)`, con la cantidad y el
+   precio de cada ítem como propiedades de la relación. q03 parte del cliente y sigue esas relaciones
+   en un único patrón, que devuelve el historial ya ordenado, con la receta con la que se dispensó
+   cada venta y el nombre de cada producto. Las mismas relaciones sirven para recorrer la red en otra
+   dirección (por ejemplo, desde un producto hasta los clientes que lo compraron, o desde una receta
+   hasta las ventas que la dispensaron) sin agregar índices ni colecciones.
 3. **Las relaciones no quedan colgadas.** Una relación siempre une dos nodos que existen: no se puede
    crear hacia un nodo inexistente, y un nodo no se puede borrar sin borrar sus relaciones
-   (`DETACH DELETE`). Además, la carga verifica que cada producto y cada lote hayan quedado unidos a
-   sus nodos relacionados (§3.3, punto 6).
+   (`DETACH DELETE`). Además, la carga verifica que cada producto, lote, receta y venta haya quedado
+   unido a sus nodos relacionados (§3.3, punto 6).
 4. **Tipos nativos.** Neo4j guarda booleanos, enteros y fechas (`date`) como tales, así que, por
    ejemplo, el vencimiento de un lote se compara y se ordena como fecha dentro del grafo.
 
-En cuanto al alcance: en recorridos cortos y de profundidad fija, como los de estas consultas (uno a
-tres saltos), llegar a cada vecino no es más rápido que una búsqueda por índice en MongoDB. La ventaja
-está en los puntos 1 y 2: el recorrido entero se expresa como un patrón y se resuelve en el motor.
+En cuanto al alcance: los recorridos de estas consultas son cortos y de profundidad fija (uno a tres
+saltos), y con este volumen de datos llegar a cada vecino no es más rápido que una búsqueda por índice
+en MongoDB, que también podría resolverlos con `$lookup` (§9.2). Elegimos Neo4j por los puntos 1 y 2:
+cada consulta se escribe como el patrón de relaciones que describe, y la red que el enunciado pide
+recorrer queda explícita en el modelo, en lugar de reconstruirse con uniones en cada consulta.
 
 Esta decisión también fija qué **no** hace Neo4j:
 
 - **No participa en las transacciones de q14 y q15.** Ventas, recetas y stock se escriben en MongoDB
   (§2.2, punto 4). Las entidades cuya fuente de verdad es MongoDB y que además se recorren en el
-  grafo (hoy, productos, lotes, clientes y ventas) tienen en Neo4j una **copia**. La copia se escribe después de que
+  grafo (productos, lotes, clientes, recetas y ventas) tienen en Neo4j una **copia**. La copia se escribe después de que
   MongoDB confirma la escritura y, si queda desfasada, se reconstruye desde MongoDB con `npm run sync`
   (§3.3, punto 3).
   Por ejemplo, q15 descuenta unidades de los lotes en MongoDB y después actualiza la copia, que es la
   que lee q08.
-- **Solo es la única copia de datos que ningún servicio escribe.** Proveedores, sucursales y
+- **Guarda la única copia solo de los datos de referencia.** Proveedores, sucursales y
   farmacéuticos son datos de referencia: solo los escribe la carga, así que viven únicamente en Neo4j.
 - **Los filtros y agregaciones que no recorren relaciones quedan en MongoDB** (q07, q09, q11), que
   los resuelve con índices y *aggregation pipelines* (§2.2, punto 3).
@@ -172,12 +179,12 @@ Esta decisión también fija qué **no** hace Neo4j:
 | Entidad        | Motor                    | Estructura                                                                                          | Justificación                                                                                                   | Estado       |
 | -------------- | ------------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------ |
 | proveedores    | Neo4j                    | nodo `(:Proveedor)`                                                                                 | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q01, q08)                 | Implementado |
-| productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: q14 valida cada producto (existencia, estado activo y precio de lista vigente) junto con el resto de la venta, y q07 lo cruza con `$lookup`. Neo4j: q01 y q08 recorren sus relaciones | Implementado |
+| productos      | MongoDB + copia en Neo4j | colección `productos` (`_id` = id_producto); nodo `(:Producto)-[:PROVISTO_POR]->(:Proveedor)`       | MongoDB: q14 valida cada producto (existencia, estado activo y precio de lista vigente) junto con el resto de la venta, y q07 lo cruza con `$lookup`. Neo4j: q01, q03 y q08 recorren sus relaciones | Implementado |
 | sucursales     | Neo4j                    | nodo `(:Sucursal)`                                                                                  | Dato de referencia que ningún servicio escribe; se llega a ella recorriendo relaciones (q02, q08, q10)          | Implementado |
 | farmacéuticos  | Neo4j                    | nodo `(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)`                                                   | Dato de referencia que ningún servicio escribe; se llega a él recorriendo relaciones (q02)                      | Implementado |
-| clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q10, q12) | Implementado |
-| recetas        | MongoDB                  | colección `recetas` (`_id` = id_receta)                                                             | Participa en la transacción de q14/q15 (§2.2, punto 4)                                                          | Implementado |
-| ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)` y `-[:DE_CLIENTE]->(:Cliente)` | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02, q05 y q10 recorren sus relaciones | Implementado |
+| clientes       | MongoDB + copia en Neo4j | colección `clientes` (`_id` = id_cliente; índice único sobre `dni`); nodo `(:Cliente)`             | MongoDB: lo escribe un servicio (q13) y lo valida q14, así que no puede tener a Neo4j como única copia (§2.3); el índice único garantiza el DNI único. Neo4j: copia para las consultas que recorren las relaciones de los clientes (q03, q10, q12) | Implementado |
+| recetas        | MongoDB + copia en Neo4j | colección `recetas` (`_id` = id_receta); nodo `(:Receta)-[:EMITIDA_PARA]->(:Cliente)`               | MongoDB: participa en la transacción de q14/q15 (§2.2, punto 4). Neo4j: q03 la recorre desde el cliente y desde sus ventas | Implementado |
+| ventas/detalle | MongoDB + copia en Neo4j | colección `ventas` (`_id` = id_venta; ítems embebidos en `items`); nodo `(:Venta)` con la cabecera, `-[:ATENDIDA_POR]->(:Farmaceutico)`, `-[:DE_CLIENTE]->(:Cliente)`, `-[:CON_RECETA]->(:Receta)` y un `-[:INCLUYE]->(:Producto)` por ítem | MongoDB: estructura jerárquica + transacción de q14/q15 (§2.2). Neo4j: q02, q03, q05, q10 y q12 recorren sus relaciones | Implementado |
 | stock_lotes    | MongoDB + copia en Neo4j | colección `lotes` (`_id` = id_lote); nodo `(:Lote)` con `DE_PRODUCTO` y `EN_SUCURSAL`               | MongoDB: actualizaciones concurrentes + transacción de q14/q15 (§2.2). Neo4j: q08 recorre sus relaciones        | Implementado |
 
 ---
@@ -229,14 +236,15 @@ src/
    método del repositorio que la modifica escribe en ambos, siempre en el mismo orden. Primero va
    **MongoDB**, que es la fuente de verdad (§2.1), y después **Neo4j**, que es una copia derivada. Si
    falla la escritura en Neo4j, la copia se reconstruye desde MongoDB con `npm run sync`, que reescribe
-   las copias sin tocar MongoDB. Nunca se reconstruye MongoDB a partir de Neo4j. Así lo hacen hoy
-   `ProductosRepository.reemplazarTodos`, `LotesRepository.reemplazarTodos` y
-   `VentasRepository.reemplazarTodas` en la carga, y `ClientesRepository.alta` y
-   `ClientesRepository.actualizar` en un servicio (q13). En q14 y q15 la escritura en MongoDB forma
-   parte de una transacción que abarca varias entidades, así que el repositorio la separa en dos
-   métodos: uno escribe en MongoDB dentro de la transacción (`VentasRepository.registrar`,
-   `LotesRepository.descontarFefo`) y otro escribe la copia en Neo4j después de confirmarla
-   (`VentasRepository.copiar`, `LotesRepository.copiarUnidades`). El orden se mantiene: primero
+   las copias sin tocar MongoDB. Nunca se reconstruye MongoDB a partir de Neo4j. Así lo hacen
+   `ProductosRepository.reemplazarTodos`, `LotesRepository.reemplazarTodos`,
+   `RecetasRepository.reemplazarTodas` y `VentasRepository.reemplazarTodas` en la carga, y
+   `ClientesRepository.alta` y `ClientesRepository.actualizar` en un servicio (q13). En q14 y q15 la
+   escritura en MongoDB forma parte de una transacción que abarca varias entidades, así que el
+   repositorio la separa en dos métodos: uno escribe en MongoDB dentro de la transacción
+   (`VentasRepository.registrar`, `RecetasRepository.dispensar`, `LotesRepository.descontarFefo`) y
+   otro escribe la copia en Neo4j después de confirmarla (`VentasRepository.copiar`,
+   `RecetasRepository.copiar`, `LotesRepository.copiarUnidades`). El orden se mantiene: primero
    MongoDB, después Neo4j (§8).
 4. **Conversión en el borde.** Las diferencias de representación de cada motor se resuelven dentro
    del repositorio, y el resto de la aplicación no las ve. Por ejemplo:
@@ -252,8 +260,8 @@ src/
 6. **Referencias entre dominios validadas por la aplicación.** Cuando una entidad referencia a otra
    que vive en otro motor (`producto.id_proveedor` apunta a un nodo de Neo4j), la aplicación valida la
    referencia antes de escribir. Hoy lo hace la carga de datos, que comprueba ids únicos y referencias
-   antes de tocar cualquier motor. Además, al escribir en el grafo productos, lotes, farmacéuticos y
-   ventas, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
+   antes de tocar cualquier motor. Además, al escribir en el grafo productos, lotes, farmacéuticos,
+   recetas y ventas, el repositorio cuenta las relaciones que creó: si alguna referencia no encontró su nodo, aborta la transacción de Neo4j y
    el grafo queda como estaba. Los servicios de escritura validan a través de los repositorios: q13
    lo hace con el de clientes, y q14 y q15 con los de clientes, farmacéuticos, productos, recetas,
    ventas y lotes (§7).
@@ -261,8 +269,9 @@ src/
 ### 3.4 Costos de la decisión
 
 - Las consultas que recorren relaciones se escriben como un único patrón de Cypher, dentro del
-  repositorio de la entidad donde empieza el recorrido (q01 en productos, q02 en ventas, q08 en lotes). Ese
-  repositorio usa los conversores de los otros dominios (`proveedorDesdeNodo`, `sucursalDesdeNodo`)
+  repositorio de la entidad donde empieza el recorrido (q01 en productos, q02 en ventas, q03 en
+  clientes, q08 en lotes). Ese repositorio usa los conversores de los otros dominios
+  (`proveedorDesdeNodo`, `sucursalDesdeNodo`, `recetaDesdeNodo`, `ventaDesdeNodo`)
   para devolver cada entidad con su tipo.
 - Cada entidad copiada en Neo4j suma una escritura más en cada servicio que la modifica. Por ejemplo,
   q15 tiene que actualizar las unidades de los lotes en el grafo después de confirmar su transacción
@@ -357,9 +366,9 @@ sección describe cómo se modela en cada uno y cierra con un diagrama de conjun
 
 | Colección | Forma del documento                                                                                                                                                  | Índices                             | Consultas |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
-| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado`, `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) y `stock_descontado` (si q15 ya descontó su stock; la carga lo pone en `false`) | `{id_cliente: 1, fecha: 1}` (q03); `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q03, q07, q09, q11, q14, q15 |
-| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{id_cliente: 1, fecha_emision: 1}` (q03); `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q03, q04, q06, q14 |
-| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q03, q04 y q06 (`$lookup`), q13, q14 |
+| `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado`, `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) y `stock_descontado` (si q15 ya descontó su stock; la carga lo pone en `false`) | `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q07, q09, q11, q14, q15 |
+| `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q04, q06, q14 |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q04 y q06 (`$lookup`), q13, q14 |
 | `lotes` | `_id` (id_lote), `id_producto`, `id_sucursal`, `nro_lote`, `unidades` (nunca negativas), `vencimiento` | `{id_sucursal: 1, id_producto: 1, vencimiento: 1}` (q15: lotes de una sucursal y un producto, en orden de vencimiento) | q14, q15 |
 | `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`), q14 |
 | `contadores` | `_id` (nombre del contador: `clientes`, `ventas` o `detalle_ventas`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta de cliente), q14 (id de cada venta y de cada ítem) |
@@ -377,9 +386,12 @@ Relaciones del grafo:
 (:Producto)-[:PROVISTO_POR]->(:Proveedor)      q01, q08
 (:Lote)-[:DE_PRODUCTO]->(:Producto)            q08
 (:Lote)-[:EN_SUCURSAL]->(:Sucursal)            q08
-(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02, q05, q10
-(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02, q05, q10
-(:Venta)-[:DE_CLIENTE]->(:Cliente)             q10, q12
+(:Farmaceutico)-[:TRABAJA_EN]->(:Sucursal)     q02, q05, q10, q11, q14, q15
+(:Venta)-[:ATENDIDA_POR]->(:Farmaceutico)      q02, q03, q05, q10
+(:Venta)-[:DE_CLIENTE]->(:Cliente)             q03, q10, q12
+(:Venta)-[:CON_RECETA]->(:Receta)              q03
+(:Venta)-[:INCLUYE]->(:Producto)               q03 (un ítem: id_detalle, cantidad, precio_unit)
+(:Receta)-[:EMITIDA_PARA]->(:Cliente)          q03
 ```
 
 | Etiqueta    | Propiedades                                                                                          | Restricciones e índices                       | Origen                       |
@@ -390,53 +402,70 @@ Relaciones del grafo:
 | `Lote`      | id_lote, nro_lote, unidades, vencimiento (`date`)                                                    | `id_lote` único; índice sobre `unidades` (q08) | Copia de la colección `lotes` |
 | `Farmaceutico` | id_farmaceutico, nombre, apellido, matricula, cargo, activo                                       | `id_farmaceutico` único                       | Única copia                  |
 | `Cliente`   | id_cliente, nombre, apellido, dni, email, telefono, ciudad, provincia, obra_social, nro_afiliado (ausente si no tiene cobertura), activo | `id_cliente` único | Copia de la colección `clientes` |
-| `Venta`     | id_venta, fecha (`date`), tipo, medio_pago, total, estado                                            | `id_venta` único; índice sobre `estado` (q02) | Copia de la cabecera de la colección `ventas`; los ítems solo están en MongoDB |
+| `Receta`    | id_receta, medico, matricula_medico, fecha_emision (`date`), tipo, dispensas_autorizadas, dispensas_realizadas, proxima_dispensa (`date`; ausente si no corresponde), estado | `id_receta` único | Copia de la colección `recetas` |
+| `Venta`     | id_venta, fecha (`date`), tipo, medio_pago, total, estado                                            | `id_venta` único; índice sobre `estado` (q02) | Copia de la colección `ventas`: la cabecera en el nodo y cada ítem como relación `INCLUYE` |
 
-Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`, `id_cliente` de las ventas) no son propiedades de los nodos: son
-las relaciones. Cada restricción de unicidad crea además el índice que usan las búsquedas por id.
+Las referencias (`id_proveedor`, `id_producto`, `id_sucursal`, `id_farmaceutico`, `id_cliente` e
+`id_receta`) no son propiedades de los nodos: son las relaciones. Los ítems de una venta tampoco son
+nodos: cada uno es una relación `INCLUYE` entre la venta y el producto, con `id_detalle`, `cantidad` y
+`precio_unit` como propiedades. Cada restricción de unicidad crea además el índice que usan las
+búsquedas por id.
 
 ### 4.3 Diagramas
 
-**Entidades por motor.** Cada recuadro es una entidad. Las flechas son referencias entre entidades:
-en MongoDB, un campo con el id de la otra entidad; en Neo4j, una relación del grafo.
+**Entidades por motor.** En MongoDB, cada referencia se muestra como `campo ─► colección`: un campo
+con el id de la otra entidad. En Neo4j, cada flecha es una relación del grafo, en su dirección.
 
 ```text
-┌──────────────────────────── MongoDB (base central) ────────────────────────────┐
-│                                                                                 │
-│  clientes            recetas                ventas                              │
-│  _id, dni (único)    _id                    _id                                 │
-│  nombre, email, ...  id_cliente ──────────► id_cliente, id_farmaceutico,        │
-│  obra_social         dispensas_*            id_receta, fecha, tipo, total,      │
-│  activo              proxima_dispensa       estado, stock_descontado            │
-│       ▲              estado                 items[ id_detalle, id_producto,     │
-│       └── id_cliente ──┘                            cantidad, precio_unit ]     │
-│                                                          │                      │
-│  productos                  lotes                        │ id_producto          │
-│  _id, nombre, precio_unit   _id, nro_lote, unidades      ▼                      │
-│  id_proveedor, activo ◄──── id_producto, id_sucursal, vencimiento               │
-│                                                                                 │
-│  contadores: _id (clientes | ventas | detalle_ventas), ultimo                   │
-└─────────────────────────────────────────────────────────────────────────────────┘
-        │ copia (productos, lotes,          ▲ id_proveedor, id_sucursal e
-        │ clientes y cabecera de ventas)    │ id_farmaceutico apuntan a nodos de Neo4j
-        ▼                                   │
-┌─────────────────────────────── Neo4j (grafo) ───────────────────────────────────┐
-│                                                                                 │
-│  (:Proveedor)* ◄─[:PROVISTO_POR]─ (:Producto) ◄─[:DE_PRODUCTO]─ (:Lote)         │
-│                                                                    │            │
-│                                                          [:EN_SUCURSAL]         │
-│                                                                    ▼            │
-│  (:Sucursal)* ◄────────────[:TRABAJA_EN]──── (:Farmaceutico)*   (:Sucursal)*    │
-│                                                      ▲                          │
-│                                       [:ATENDIDA_POR]│                          │
-│  (:Cliente) ◄─────────[:DE_CLIENTE]──────────── (:Venta)                        │
-│                                                                                 │
-│  * única copia: la escribe solo la carga (npm run seed)                         │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────── MongoDB (base central) ──────────────────────────────┐
+│                                                                                   │
+│  clientes                recetas                   ventas                         │
+│  _id, dni (único)        _id, medico, tipo,        _id, fecha, tipo, total,       │
+│  nombre, email, ...      estado, dispensas_*,      medio_pago, estado,            │
+│  obra_social, activo     proxima_dispensa          stock_descontado               │
+│                          id_cliente ─► clientes    id_cliente ─► clientes         │
+│                                                    id_receta ─► recetas           │
+│                                                    id_farmaceutico ···► Neo4j     │
+│                                                    items[ id_detalle, cantidad,   │
+│                                                      precio_unit,                 │
+│                                                      id_producto ─► productos ]   │
+│                                                                                   │
+│  productos                   lotes                                                │
+│  _id, nombre, precio_unit,   _id, nro_lote, unidades,                             │
+│  condicion_venta, activo     vencimiento                                          │
+│  id_proveedor ···► Neo4j     id_producto ─► productos                             │
+│                              id_sucursal ···► Neo4j                               │
+│                                                                                   │
+│  contadores: _id (clientes | ventas | detalle_ventas), ultimo                     │
+│                                                                                   │
+│  ─►  referencia a otra colección      ···►  referencia a un nodo de Neo4j         │
+└───────────────────────────────────────────────────────────────────────────────────┘
+        │ copia: productos, lotes, clientes,  ▲ id_proveedor, id_sucursal e
+        │ recetas y ventas (con sus ítems)    │ id_farmaceutico apuntan a nodos
+        ▼                                     │
+┌────────────────────────────────── Neo4j (grafo) ──────────────────────────────────┐
+│                                                                                   │
+│  (:Proveedor)* ◄─[:PROVISTO_POR]── (:Producto) ◄─[:DE_PRODUCTO]────── (:Lote)     │
+│                                         ▲                                │        │
+│                                         │                         [:EN_SUCURSAL]  │
+│                                     [:INCLUYE]                           ▼        │
+│                                         │                          (:Sucursal)*   │
+│                                         │                                ▲        │
+│                                         │                          [:TRABAJA_EN]  │
+│                                         │                                │        │
+│  (:Receta) ◄─[:CON_RECETA]────────── (:Venta) ─[:ATENDIDA_POR]─► (:Farmaceutico)* │
+│      │                                  │                                         │
+│      │ [:EMITIDA_PARA]                  │ [:DE_CLIENTE]                           │
+│      │                                  │                                         │
+│      └─────────► (:Cliente) ◄───────────┘                                         │
+│                                                                                   │
+│  * única copia: la escribe solo la carga (npm run seed)                           │
+│                                                                                   │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Las recetas solo viven en MongoDB, y los ítems de cada venta están embebidos en su documento: ninguna
-de las dos cosas tiene nodo en el grafo.
+En el grafo, los ítems de cada venta son relaciones `INCLUYE` entre la venta y cada producto, con la
+cantidad y el precio como propiedades. `stock_descontado` solo está en MongoDB.
 
 **Venta y sus ítems.** Un único documento de la colección `ventas`:
 
@@ -472,7 +501,7 @@ comprueba todo en memoria (§6.1):
   precio de sus ítems.
 
 Si una fila no pasa, el script termina con un error que indica fila y regla, y no modifica ningún
-dato. Además, cuando escribe en el grafo productos, lotes, farmacéuticos y ventas, el repositorio
+dato. Además, cuando escribe en el grafo productos, lotes, farmacéuticos, recetas y ventas, el repositorio
 cuenta las relaciones que creó: si alguna no encontró su nodo, aborta la transacción de Neo4j y el
 grafo queda como estaba (§3.3, punto 6).
 
@@ -758,32 +787,45 @@ datos provistos, y V023, adicional, que atendió F011 en la Farmacia Mendoza Cen
 ### Q03: Historial completo de un cliente: ventas y recetas ordenadas cronológicamente
 
 - **Tipo:** Lectura · **Parámetros:** `id_cliente` · **Módulo:** `src/queries/q03.ts`
-- **Motores:** MongoDB (colecciones `clientes`, `ventas` y `recetas`).
-- **Resolución de relaciones:** por referencia y combinación en la aplicación. `ventas` y `recetas`
-  guardan `id_cliente`, y cada colección se filtra con su índice compuesto sobre cliente y fecha
-  (`IXSCAN`). La aplicación une los dos resultados y los ordena por fecha. A igual fecha, la receta va
-  antes que la venta. Los ítems de cada venta están embebidos, así que no requieren otra lectura. Si
-  el cliente no existe, la consulta falla con un error. Un cliente sin ventas ni recetas devuelve una
-  lista vacía.
+- **Motores:** Neo4j (nodos `Cliente`, `Receta`, `Venta`, `Farmaceutico` y `Producto`).
+- **Resolución de relaciones:** recorrido de relaciones en el servidor, en un único patrón. Desde el
+  nodo del cliente (búsqueda por la restricción única de `id_cliente`) sigue
+  `(:Cliente)<-[:EMITIDA_PARA|DE_CLIENTE]-(h)`, donde `h` es una receta o una venta. Desde cada venta
+  sigue `ATENDIDA_POR` (el farmacéutico), `CON_RECETA` (la receta con la que se dispensó) e `INCLUYE`
+  (los productos, con la cantidad y el precio de cada ítem). El `ORDER BY` deja el historial ordenado
+  en el motor: por fecha (la de la venta o la de emisión de la receta); a igual fecha, la receta antes
+  que la venta; y después por id. Es la red cliente–receta–venta–producto que el enunciado describe
+  para las consultas de historial (§2.3, punto 2). Si el cliente no existe, la consulta falla con un
+  error; un cliente sin ventas ni recetas devuelve una lista vacía.
+- **Copia:** el grafo tiene una copia de clientes, recetas y ventas que se escribe después de cada
+  servicio (§8). Si esa escritura falló, el historial no muestra el cambio hasta correr `npm run sync`.
 
 **Código:**
 
-```ts
-// VentasRepository.deCliente y RecetasRepository.deCliente
-this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
-this.coleccion.find({ id_cliente: idCliente }).sort({ fecha_emision: 1, _id: 1 }).toArray();
-
-// q03HistorialCliente
-const historial = [
-  ...recetasCliente.map((receta) => ({
-    registro: "receta" as const,
-    fecha: receta.fecha_emision,
-    ...receta,
-  })),
-  ...ventasCliente.map((venta) => ({ registro: "venta" as const, ...venta })),
-];
-return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
+```cypher
+// ClientesRepository.historial
+MATCH (c:Cliente {id_cliente: $idCliente})
+OPTIONAL MATCH (c)<-[:EMITIDA_PARA|DE_CLIENTE]-(h)
+OPTIONAL MATCH (h)-[:ATENDIDA_POR]->(f:Farmaceutico)
+OPTIONAL MATCH (h)-[:CON_RECETA]->(r:Receta)
+CALL (h) {
+  MATCH (h)-[i:INCLUYE]->(p:Producto)
+  WITH i, p
+  ORDER BY i.id_detalle
+  RETURN collect(i {
+    .id_detalle, id_producto: p.id_producto, nombre_producto: p.nombre, .cantidad, .precio_unit
+  }) AS items
+}
+WITH c, h, f, r, items
+ORDER BY coalesce(h.fecha, h.fecha_emision), h:Venta, coalesce(h.id_venta, h.id_receta)
+RETURN c.id_cliente AS idCliente, collect(CASE WHEN h IS NULL THEN null ELSE {
+  nodo: h, esVenta: h:Venta, idFarmaceutico: f.id_farmaceutico, idReceta: r.id_receta,
+  items: items
+} END) AS historial
 ```
+
+El repositorio convierte cada nodo a su tipo de dominio (`recetaDesdeNodo` y `ventaDesdeNodo`), que
+reconstruye `id_cliente`, `id_farmaceutico` e `id_receta` a partir de las relaciones recorridas.
 
 **Ejemplo de resultado** (`npm run query -- 3 C003`):
 
@@ -818,11 +860,11 @@ return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
       {
         "id_detalle": "D005",
         "id_producto": "PRD004",
+        "nombre_producto": "Losartán 50mg x30",
         "cantidad": 1,
         "precio_unit": 5700
       }
-    ],
-    "stock_descontado": false
+    ]
   },
   {
     "registro": "venta",
@@ -839,11 +881,11 @@ return historial.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
       {
         "id_detalle": "D006",
         "id_producto": "PRD004",
+        "nombre_producto": "Losartán 50mg x30",
         "cantidad": 2,
         "precio_unit": 6200
       }
-    ],
-    "stock_descontado": false
+    ]
   }
 ]
 ```
@@ -2193,7 +2235,7 @@ Rechazado: el cliente C019 está dado de baja
   (opcional) y los ítems (`id_producto` y cantidad de cada uno) · **Módulo:** `src/queries/q14.ts`
 - **Motores:** MongoDB (colecciones `ventas`, `recetas`, `lotes`, `clientes`, `productos` y
   `contadores`) y Neo4j (el farmacéutico y su sucursal, cuya única copia está en el grafo, y las
-  copias de la venta y de los lotes).
+  copias de la venta, de la receta y de los lotes).
 - **Resolución de relaciones:** combinación en la aplicación. El cliente, los productos y la receta
   se leen de MongoDB por id; el farmacéutico y su sucursal se leen de Neo4j con el patrón
   `(:Farmaceutico {id_farmaceutico: $id})-[:TRABAJA_EN]->(:Sucursal)`. La venta guarda las
@@ -2219,7 +2261,7 @@ Rechazado: el cliente C019 está dado de baja
   dispensa aplica las reglas de negocio: suma una dispensa; si quedan dispensas autorizadas, la
   próxima se fija 30 días después; si no, la receta pasa a 'Completada' y `proxima_dispensa` queda
   vacía (las recetas simples y archivadas se completan con su única dispensa). Después de confirmar
-  la transacción se escriben las copias de la venta y de los lotes en Neo4j.
+  la transacción se escriben las copias de la receta, de la venta y de los lotes en Neo4j.
 
 **Uso** (cada ítem va como `id_producto:cantidad`):
 
@@ -2249,7 +2291,8 @@ const resultado = await transacciones.ejecutar(async (session) => {
   return { venta: stock.venta, receta: dispensa, lotes: stock.lotes };
 });
 // después de confirmar, las copias en Neo4j
-await ventas.copiar(resultado.venta); // MERGE (:Venta) + ATENDIDA_POR + DE_CLIENTE
+if (resultado.receta) await recetas.copiar(resultado.receta.despues); // MERGE (:Receta)
+await ventas.copiar(resultado.venta); // MERGE (:Venta) + ATENDIDA_POR, DE_CLIENTE, CON_RECETA e INCLUYE
 await lotes.copiarUnidades(resultado.lotes.map((lote) => lote.despues));
 
 // RecetasRepository.dispensar: reglas de tratamiento prolongado
@@ -2346,11 +2389,16 @@ $ npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 }
 ```
 
-Las copias en Neo4j, consultadas con Cypher:
+Las copias en Neo4j, consultadas con Cypher (la venta con sus relaciones, su ítem, la receta y el
+lote):
 
 ```text
-v.id_venta, v.fecha, v.tipo, v.total, v.estado, f.id_farmaceutico, c.id_cliente
-"V027", 2026-11-15, "Con receta", 7300, "Completada", "F005", "C003"
+v.id_venta, v.fecha, v.tipo, v.total, v.estado, f.id_farmaceutico, c.id_cliente, r.id_receta
+"V027", 2026-11-15, "Con receta", 7300, "Completada", "F005", "C003", "RC002"
+i.id_detalle, p.id_producto, i.cantidad, i.precio_unit
+"D035", "PRD008", 1, 7300
+r.id_receta, r.dispensas_realizadas, r.proxima_dispensa, r.estado
+"RC002", 3, NULL, "Completada"
 l.id_lote, l.unidades
 "L010", 11
 ```
@@ -2709,8 +2757,8 @@ escrituras ya confirmadas: o se confirma todo o no se confirma nada.
    insuficiente, la transacción se aborta y ningún cambio queda escrito. El rechazo integrado de
    Q14 lo muestra: con 20 unidades pedidas y 18 vigentes, no quedó la venta, la receta no cambió y
    los lotes tampoco.
-4. **Copias en Neo4j, después de confirmar.** Se escriben el nodo `(:Venta)` con sus relaciones y las
-   unidades de los nodos `(:Lote)`. Neo4j no participa en la transacción (§2.3). Si esta escritura
+4. **Copias en Neo4j, después de confirmar.** Se escriben el nodo `(:Receta)` (si hubo dispensa), el
+   nodo `(:Venta)` con sus relaciones y sus ítems, y las unidades de los nodos `(:Lote)`. Neo4j no participa en la transacción (§2.3). Si esta escritura
    falla, la venta y el stock ya quedaron confirmados en MongoDB: el servicio lo informa y
    `npm run sync` reconstruye las copias desde MongoDB (§3.3, punto 3). Hasta entonces, las consultas
    que leen el grafo (por ejemplo q08) pueden mostrar datos desfasados.
@@ -2767,9 +2815,10 @@ transacción es la opción más simple y con garantías más fuertes.
 ### 9.2 Alternativas evaluadas
 
 - **Todo en MongoDB, sin Neo4j.** Es posible resolver las consultas con `$lookup`, y habría una sola
-  base y ninguna copia que mantener. Elegimos sumar Neo4j porque varias consultas (q01, q02, q05, q08,
-  q10, q12) son recorridos de relaciones que en el grafo se escriben como un patrón y se resuelven en
-  el motor en un viaje (§2.3), y porque el enunciado pide persistencia políglota.
+  base y ninguna copia que mantener. Elegimos sumar Neo4j porque varias consultas (q01, q02, q03, q05,
+  q08, q10, q12) son recorridos de relaciones que en el grafo se escriben como el patrón que
+  describen, y porque la red cliente–receta–venta–producto que recorre el historial queda explícita
+  en el modelo, en lugar de reconstruirse con uniones en cada consulta (§2.3).
 - **Todo en Neo4j, sin MongoDB.** Evitaría las copias, pero las ventas con ítems de cantidad variable
   encajan mejor en un documento, y q14 y q15 necesitan una transacción sobre ventas, recetas y stock
   con actualizaciones atómicas condicionadas, que resolvemos en un único motor con MongoDB (§2.2,

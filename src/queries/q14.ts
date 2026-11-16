@@ -14,8 +14,8 @@ import { descontarStockDeVenta } from "./q15.js";
 // Q14: registro de una venta 'Completada' (cabecera e ítems).
 //
 // Motores: MongoDB (ventas, recetas, lotes, clientes y productos, la fuente de verdad) y Neo4j (el
-// farmacéutico y su sucursal, que solo están en el grafo, y las copias de la venta y los lotes).
-// Todas las validaciones se hacen antes de escribir. La venta, la dispensa de la receta y el
+// farmacéutico y su sucursal, que solo están en el grafo, y las copias de la venta, la receta y los
+// lotes). Todas las validaciones se hacen antes de escribir. La venta, la dispensa de la receta y el
 // descuento de stock (q15) se escriben en una única transacción de MongoDB: si el stock no
 // alcanza, no queda la venta ni la receta modificada. Después de confirmarla se escriben las
 // copias en Neo4j.
@@ -98,6 +98,7 @@ export async function q14RegistrarVenta(
     const stock = await descontarStockDeVenta({ ventas, farmaceuticos, lotes }, venta._id, session);
     return { venta: stock.venta, receta: dispensa, lotes: stock.lotes };
   });
+  if (resultado.receta) await recetas.copiar(resultado.receta.despues);
   await ventas.copiar(resultado.venta);
   await lotes.copiarUnidades(resultado.lotes.map((lote) => lote.despues));
   return resultado;

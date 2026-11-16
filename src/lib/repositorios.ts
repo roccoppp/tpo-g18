@@ -21,7 +21,7 @@ export function crearRepositorios(db: Db, neo4j: Driver) {
     lotes: new LotesRepository(db, neo4j),
     productos: new ProductosRepository(db, neo4j),
     proveedores: new ProveedoresRepository(neo4j),
-    recetas: new RecetasRepository(db),
+    recetas: new RecetasRepository(db, neo4j),
     sucursales: new SucursalesRepository(neo4j),
     ventas: new VentasRepository(db, neo4j),
     transacciones: new TransaccionesMongo(db),

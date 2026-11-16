@@ -3,6 +3,10 @@ import neo4j, { type Date as FechaNeo4j, type Driver, type Node } from "neo4j-dr
 import { fijarContador, formatearId, siguienteNumero } from "../lib/contadores.js";
 import { OperacionRechazada } from "../lib/errores.js";
 import { asegurarIdUnico, enTransaccion } from "../lib/grafo.js";
+import { recetaDesdeNodo } from "../recetas/repository.js";
+import type { Receta } from "../recetas/types.js";
+import { ventaDesdeNodo } from "../ventas/repository.js";
+import type { ItemVenta, Venta } from "../ventas/types.js";
 import type { Cliente } from "./types.js";
 
 // MongoDB es la fuente de verdad de los clientes: los escribe el ABM (q13) y los valida el registro
@@ -146,6 +150,76 @@ export class ClientesRepository {
         cliente: clienteDesdeNodo(registro.get("c")),
         ultimaVenta: ultimaVenta === null ? null : ultimaVenta.toStandardDate(),
       };
+    });
+  }
+
+  /**
+   * Historial de un cliente (q03): sus recetas y sus ventas, de la más antigua a la más reciente. A
+   * igual fecha, la receta va antes que la venta, y después ordena por id. `null` si el cliente no
+   * existe. Un único patrón en Neo4j: desde el cliente sigue
+   *   (:Cliente)<-[:EMITIDA_PARA|DE_CLIENTE]-(:Receta|:Venta)
+   * y, desde cada venta, ATENDIDA_POR (el farmacéutico), CON_RECETA (la receta con la que se
+   * dispensó) e INCLUYE (los productos, con cantidad y precio). El grafo devuelve el historial ya
+   * ordenado.
+   */
+  async historial(idCliente: string): Promise<
+    | (
+        | ({ registro: "receta"; fecha: Date } & Receta)
+        | ({ registro: "venta" } & Omit<Venta, "stock_descontado" | "items"> & {
+              items: (ItemVenta & { nombre_producto: string })[];
+            })
+      )[]
+    | null
+  > {
+    const { records } = await this.neo4j.executeQuery(
+      `MATCH (c:Cliente {id_cliente: $idCliente})
+       OPTIONAL MATCH (c)<-[:EMITIDA_PARA|DE_CLIENTE]-(h)
+       OPTIONAL MATCH (h)-[:ATENDIDA_POR]->(f:Farmaceutico)
+       OPTIONAL MATCH (h)-[:CON_RECETA]->(r:Receta)
+       CALL (h) {
+         MATCH (h)-[i:INCLUYE]->(p:Producto)
+         WITH i, p
+         ORDER BY i.id_detalle
+         RETURN collect(i {
+           .id_detalle, id_producto: p.id_producto, nombre_producto: p.nombre, .cantidad, .precio_unit
+         }) AS items
+       }
+       WITH c, h, f, r, items
+       ORDER BY coalesce(h.fecha, h.fecha_emision), h:Venta, coalesce(h.id_venta, h.id_receta)
+       RETURN c.id_cliente AS idCliente, collect(CASE WHEN h IS NULL THEN null ELSE {
+         nodo: h, esVenta: h:Venta, idFarmaceutico: f.id_farmaceutico, idReceta: r.id_receta,
+         items: items
+       } END) AS historial`,
+      { idCliente },
+      { routing: neo4j.routing.READ },
+    );
+    if (records.length === 0) return null;
+    const filas: {
+      nodo: Node;
+      esVenta: boolean;
+      idFarmaceutico: string | null;
+      idReceta: string | null;
+      items: (ItemVenta & { nombre_producto: string })[];
+    }[] = records[0].get("historial");
+    return filas.map((fila) => {
+      if (!fila.esVenta) {
+        const receta = recetaDesdeNodo(fila.nodo, idCliente);
+        return { registro: "receta" as const, fecha: receta.fecha_emision, ...receta };
+      }
+      const items = fila.items.map((item) => ({
+        id_detalle: item.id_detalle,
+        id_producto: item.id_producto,
+        nombre_producto: item.nombre_producto,
+        cantidad: item.cantidad,
+        precio_unit: item.precio_unit,
+      }));
+      const venta = ventaDesdeNodo(fila.nodo, {
+        idCliente,
+        idFarmaceutico: fila.idFarmaceutico!,
+        idReceta: fila.idReceta,
+        items,
+      });
+      return { registro: "venta" as const, ...venta, items };
     });
   }
 

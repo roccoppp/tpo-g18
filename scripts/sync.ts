@@ -11,10 +11,12 @@ const neo4j = await connectNeo4j();
 try {
   const repos = crearRepositorios(mongo.db(), neo4j);
 
-  // Los lotes se relacionan con los productos y las ventas con los clientes: van después.
+  // Los lotes se relacionan con los productos, las recetas con los clientes, y las ventas con los
+  // clientes, las recetas y los productos: van después.
   console.log(`Neo4j: ${await repos.productos.reconstruirCopia()} productos copiados desde MongoDB`);
   console.log(`Neo4j: ${await repos.lotes.reconstruirCopia()} lotes copiados desde MongoDB`);
   console.log(`Neo4j: ${await repos.clientes.reconstruirCopia()} clientes copiados desde MongoDB`);
+  console.log(`Neo4j: ${await repos.recetas.reconstruirCopia()} recetas copiadas desde MongoDB`);
   console.log(`Neo4j: ${await repos.ventas.reconstruirCopia()} ventas copiadas desde MongoDB`);
 } finally {
   await neo4j.close();

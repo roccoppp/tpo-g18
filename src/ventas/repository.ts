@@ -22,14 +22,16 @@ const PREFIJO_DETALLE = "D";
 const CONTADOR_DETALLE = "detalle_ventas";
 
 // MongoDB es la fuente de verdad de las ventas: cada documento guarda la cabecera y sus ítems
-// embebidos. Neo4j guarda una copia de la cabecera como nodo (:Venta) para recorrer sus relaciones.
-// En el grafo, `id_farmaceutico` e `id_cliente` no son propiedades: son las relaciones
-// (:Venta)-[:ATENDIDA_POR]->(:Farmaceutico) y (:Venta)-[:DE_CLIENTE]->(:Cliente). Los ítems solo
-// están en MongoDB.
+// embebidos. Neo4j guarda una copia de cada venta para recorrer sus relaciones: la cabecera es el
+// nodo (:Venta), y las referencias y los ítems son relaciones. `id_farmaceutico`, `id_cliente` e
+// `id_receta` son (:Venta)-[:ATENDIDA_POR]->(:Farmaceutico), (:Venta)-[:DE_CLIENTE]->(:Cliente) y
+// (:Venta)-[:CON_RECETA]->(:Receta); cada ítem es una relación
+// (:Venta)-[:INCLUYE {id_detalle, cantidad, precio_unit}]->(:Producto). `stock_descontado` solo
+// está en MongoDB.
 
 /**
- * Acceso a ventas. Motores: MongoDB (colección `ventas`, fuente de verdad) y Neo4j (copia de la
- * cabecera como nodos `(:Venta)`).
+ * Acceso a ventas. Motores: MongoDB (colección `ventas`, fuente de verdad) y Neo4j (copia como
+ * nodos `(:Venta)` con sus relaciones).
  */
 export class VentasRepository {
   private readonly coleccion: Collection<Venta>;
@@ -43,16 +45,15 @@ export class VentasRepository {
 
   /**
    * Reemplaza todas las ventas (carga idempotente) y asegura los índices que usan las consultas:
-   * `{id_cliente, fecha}` para `deCliente`, `{estado, fecha}` para las agregaciones que filtran por
-   * estado y período, y `{tipo, total}` para `noAnuladasDeTipoConTotalMenorA`. Deja los contadores
-   * de ids de ventas y de ítems en los más altos cargados. Escribe primero en MongoDB, que es la
-   * fuente de verdad, y después en la copia de Neo4j. Si la copia falla, se reconstruye con
-   * `npm run sync`.
+   * `{estado, fecha}` para las agregaciones que filtran por estado y período, y `{tipo, total}` para
+   * `noAnuladasDeTipoConTotalMenorA`. Deja los contadores de ids de ventas y de ítems en los más
+   * altos cargados. Escribe primero en MongoDB, que es la fuente de verdad, y después en la copia de
+   * Neo4j. Los clientes, las recetas y los productos tienen que estar copiados antes. Si la copia
+   * falla, se reconstruye con `npm run sync`.
    */
   async reemplazarTodas(ventas: Venta[]): Promise<void> {
     await this.coleccion.deleteMany({});
     if (ventas.length > 0) await this.coleccion.insertMany(ventas);
-    await this.coleccion.createIndex({ id_cliente: 1, fecha: 1 });
     await this.coleccion.createIndex({ estado: 1, fecha: 1 });
     await this.coleccion.createIndex({ tipo: 1, total: 1 });
     await fijarContador(this.db, CONTADOR_VENTAS, PREFIJO_VENTA, ventas.map((venta) => venta._id));
@@ -87,9 +88,10 @@ export class VentasRepository {
   }
 
   /**
-   * Escribe la copia de una venta en Neo4j: el nodo (:Venta) con sus relaciones ATENDIDA_POR y
-   * DE_CLIENTE. Se llama después de confirmar la escritura en MongoDB: si falla, MongoDB ya quedó
-   * escrito y la copia se reconstruye con `npm run sync`.
+   * Escribe la copia de una venta en Neo4j: el nodo (:Venta) con sus relaciones ATENDIDA_POR,
+   * DE_CLIENTE, CON_RECETA (si tiene receta) e INCLUYE (una por ítem). Se llama después de confirmar
+   * la escritura en MongoDB: si falla, MongoDB ya quedó escrito y la copia se reconstruye con
+   * `npm run sync`.
    */
   async copiar(venta: Venta): Promise<void> {
     try {
@@ -132,11 +134,6 @@ export class VentasRepository {
     if (matchedCount === 0) {
       throw new OperacionRechazada(`el stock de la venta ${idVenta} ya se descontó`);
     }
-  }
-
-  /** Ventas de un cliente con sus ítems, de la más antigua a la más reciente. */
-  async deCliente(idCliente: string): Promise<Venta[]> {
-    return this.coleccion.find({ id_cliente: idCliente }).sort({ fecha: 1, _id: 1 }).toArray();
   }
 
   /**
@@ -225,9 +222,10 @@ export class VentasRepository {
   }
 
   /**
-   * Deja en el grafo exactamente estas ventas, cada una unida a su farmacéutico y a su cliente, en
-   * una única transacción. Si algún farmacéutico o cliente no existe, la transacción se aborta:
-   * ninguna venta queda sin sus relaciones. Los clientes tienen que estar copiados antes.
+   * Deja en el grafo exactamente estas ventas, cada una con sus relaciones, en una única
+   * transacción. Si alguna referencia (farmacéutico, cliente, receta o producto de un ítem) no
+   * existe, la transacción se aborta: ninguna venta queda sin sus relaciones. Los clientes, las
+   * recetas y los productos tienen que estar copiados antes.
    */
   private async copiarAlGrafo(ventas: Venta[]): Promise<void> {
     await asegurarIdUnico(this.neo4j, "Venta", "id_venta");
@@ -244,9 +242,38 @@ export class VentasRepository {
 }
 
 /**
- * Crea o actualiza en el grafo estas ventas (MERGE), cada una unida a su farmacéutico y a su
- * cliente. Si algún farmacéutico o cliente no existe, lanza un error y la transacción `tx` se
- * aborta: ninguna venta queda sin sus relaciones.
+ * Convierte un nodo (:Venta) y lo que la consulta recorrió desde él (farmacéutico, cliente, receta e
+ * ítems) en la venta completa, sin `stock_descontado`, que solo está en MongoDB.
+ */
+export function ventaDesdeNodo(
+  nodo: Node,
+  relaciones: {
+    idCliente: string;
+    idFarmaceutico: string;
+    idReceta: string | null;
+    items: ItemVenta[];
+  },
+): Omit<Venta, "stock_descontado"> {
+  const { _id, ...cabecera } = cabeceraDesdeNodo(nodo, relaciones.idFarmaceutico);
+  return {
+    _id,
+    id_cliente: relaciones.idCliente,
+    id_farmaceutico: cabecera.id_farmaceutico,
+    id_receta: relaciones.idReceta,
+    fecha: cabecera.fecha,
+    tipo: cabecera.tipo,
+    medio_pago: cabecera.medio_pago,
+    total: cabecera.total,
+    estado: cabecera.estado,
+    items: relaciones.items,
+  };
+}
+
+/**
+ * Crea o actualiza en el grafo estas ventas (MERGE), cada una unida a su farmacéutico, a su cliente,
+ * a su receta (si tiene) y a los productos de sus ítems. Antes borra las relaciones que tenía, así
+ * que la copia queda igual a la venta recibida. Si alguna referencia no existe, lanza un error y la
+ * transacción `tx` se aborta: ninguna venta queda sin sus relaciones.
  */
 async function fusionarEnGrafo(tx: ManagedTransaction, ventas: Venta[]): Promise<void> {
   const { records } = await tx.run(
@@ -254,25 +281,48 @@ async function fusionarEnGrafo(tx: ManagedTransaction, ventas: Venta[]): Promise
      MERGE (v:Venta {id_venta: fila.nodo.id_venta})
      SET v = fila.nodo
      WITH v, fila
-     OPTIONAL MATCH (v)-[anterior:ATENDIDA_POR|DE_CLIENTE]->()
-     DELETE anterior
-     WITH DISTINCT v, fila.id_farmaceutico AS idFarmaceutico, fila.id_cliente AS idCliente
-     MATCH (f:Farmaceutico {id_farmaceutico: idFarmaceutico})
-     MATCH (c:Cliente {id_cliente: idCliente})
+     CALL (v) {
+       MATCH (v)-[anterior:ATENDIDA_POR|DE_CLIENTE|CON_RECETA|INCLUYE]->()
+       DELETE anterior
+     }
+     MATCH (f:Farmaceutico {id_farmaceutico: fila.id_farmaceutico})
+     MATCH (c:Cliente {id_cliente: fila.id_cliente})
      CREATE (v)-[:ATENDIDA_POR]->(f), (v)-[:DE_CLIENTE]->(c)
-     RETURN count(*) AS relacionados`,
+     WITH v, fila
+     OPTIONAL MATCH (r:Receta {id_receta: fila.id_receta})
+     FOREACH (receta IN CASE WHEN r IS NULL THEN [] ELSE [r] END |
+       CREATE (v)-[:CON_RECETA]->(receta))
+     WITH v, fila, r
+     CALL (v, fila) {
+       UNWIND fila.items AS item
+       MATCH (p:Producto {id_producto: item.id_producto})
+       CREATE (v)-[:INCLUYE {
+         id_detalle: item.id_detalle, cantidad: item.cantidad, precio_unit: item.precio_unit
+       }]->(p)
+       RETURN count(*) AS items
+     }
+     RETURN sum(CASE WHEN items = size(fila.items) AND (r IS NULL) = (fila.id_receta IS NULL)
+                     THEN 1 ELSE 0 END) AS completas`,
     {
       ventas: ventas.map((venta) => ({
         nodo: aNodo(venta),
         id_farmaceutico: venta.id_farmaceutico,
         id_cliente: venta.id_cliente,
+        id_receta: venta.id_receta,
+        items: venta.items.map((item) => ({
+          id_detalle: item.id_detalle,
+          id_producto: item.id_producto,
+          cantidad: neo4j.int(item.cantidad),
+          precio_unit: neo4j.int(item.precio_unit),
+        })),
       })),
     },
   );
-  const relacionados: number = records[0].get("relacionados");
-  if (relacionados !== ventas.length) {
+  const completas: number = records[0].get("completas");
+  if (completas !== ventas.length) {
     throw new Error(
-      `Neo4j: solo ${relacionados} de ${ventas.length} ventas encontraron su farmacéutico y su cliente`,
+      `Neo4j: solo ${completas} de ${ventas.length} ventas encontraron su farmacéutico, su cliente, ` +
+        "su receta y los productos de sus ítems",
     );
   }
 }
