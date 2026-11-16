@@ -103,7 +103,7 @@ Uso de q14 (cada ítem va como `id_producto:cantidad`; la receta, solo si algún
 
 ```bash
 npm run query -- 14 C001 F001 Efectivo PRD001:2 PRD011:1
-npm run query -- 14 C003 F001 Débito receta=RC002 PRD008:1
+npm run query -- 14 C003 F005 Débito receta=RC002 PRD008:1
 ```
 
 La venta se registra con fecha de hoy, el precio de lista vigente de cada producto y el total calculado a partir de los ítems. Si tiene receta, registra la dispensa. En la misma transacción descuenta el stock con q15: si no alcanza para algún ítem, la venta se rechaza completa. Imprime la venta, la receta antes y después (si corresponde) y los lotes modificados. Si una validación no pasa, imprime `Rechazado: <motivo>` y no modifica ningún dato.

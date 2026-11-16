@@ -109,7 +109,7 @@ Elegimos el motor central según las características del negocio que pide consi
    descuento de stock (q15) tienen que funcionar juntos: si el descuento de stock falla, no puede quedar
    ni la venta registrada ni la receta modificada. MongoDB ofrece transacciones ACID sobre varios
    documentos y colecciones. Por eso guardamos en MongoDB todas las entidades que esas escrituras tocan
-   (ventas, recetas y stock), y la operación se resuelve con una transacción en un único motor. Así no
+   (ventas, recetas, stock y clientes), y la operación se resuelve con una transacción en un único motor. Así no
    hay que coordinar dos motores que no comparten transacciones. Las transacciones requieren un
    *replica set*: el entorno levanta uno de un solo nodo (`rs0`) y `npm run check` verifica que una
    transacción abortada no deja datos.
@@ -370,7 +370,7 @@ sección describe cómo se modela en cada uno y cierra con un diagrama de conjun
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------- |
 | `ventas`  | `_id` (id_venta), `id_cliente`, `id_farmaceutico`, `id_receta` (`null` en ventas libres), `fecha`, `tipo`, `medio_pago`, `total`, `estado`, `items` embebidos (`id_detalle`, `id_producto`, `cantidad`, `precio_unit`) y `stock_descontado` (si q15 ya descontó su stock; la carga lo pone en `false`) | `{estado: 1, fecha: 1}` (q07, q11); `{tipo: 1, total: 1}` (q09) | q07, q09, q11, q14, q15 |
 | `recetas` | `_id` (id_receta), `id_cliente`, `medico`, `matricula_medico`, `fecha_emision`, `tipo`, `dispensas_autorizadas`, `dispensas_realizadas`, `proxima_dispensa` (`null` si no corresponde), `estado` | `{tipo: 1, estado: 1, proxima_dispensa: 1}` (q06) | q04, q06, q14 |
-| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` | `{dni: 1}` único | q04 y q06 (`$lookup`), q13, q14 |
+| `clientes` | `_id` (id_cliente), `nombre`, `apellido`, `dni`, `email`, `telefono`, `ciudad`, `provincia`, `obra_social`, `nro_afiliado` (`null` si no tiene cobertura), `activo` y `version` (campo técnico de control de concurrencia: lo incrementa q14 dentro de su transacción, §8; no está hasta la primera venta registrada con q14, no forma parte del tipo `Cliente` y las lecturas lo excluyen) | `{dni: 1}` único | q04 y q06 (`$lookup`), q13, q14 |
 | `lotes` | `_id` (id_lote), `id_producto`, `id_sucursal`, `nro_lote`, `unidades` (nunca negativas), `vencimiento` | `{id_sucursal: 1, id_producto: 1, vencimiento: 1}` (q15: lotes de una sucursal y un producto, en orden de vencimiento) | q14, q15 |
 | `productos` | `_id` (id_producto), `nombre`, `principio_activo`, `categoria`, `presentacion`, `condicion_venta`, `precio_unit`, `id_proveedor`, `activo` | (solo `_id`) | q07 (`$lookup`), q14 |
 | `contadores` | `_id` (nombre del contador: `clientes`, `ventas` o `detalle_ventas`), `ultimo` (último número de id asignado) | (solo `_id`) | q13 (id de cada alta de cliente), q14 (id de cada venta y de cada ítem) |
@@ -424,8 +424,8 @@ con el id de la otra entidad. En Neo4j, cada flecha es una relación del grafo, 
 │  clientes                recetas                   ventas                         │
 │  _id, dni (único)        _id, medico, tipo,        _id, fecha, tipo, total,       │
 │  nombre, email, ...      estado, dispensas_*,      medio_pago, estado,            │
-│  obra_social, activo     proxima_dispensa          stock_descontado               │
-│                          id_cliente ─► clientes    id_cliente ─► clientes         │
+│  obra_social, activo,    proxima_dispensa          stock_descontado               │
+│  version                 id_cliente ─► clientes    id_cliente ─► clientes         │
 │                                                    id_receta ─► recetas           │
 │                                                    id_farmaceutico ···► Neo4j     │
 │                                                    items[ id_detalle, cantidad,   │
@@ -467,7 +467,7 @@ con el id de la otra entidad. En Neo4j, cada flecha es una relación del grafo, 
 ```
 
 En el grafo, los ítems de cada venta son relaciones `INCLUYE` entre la venta y cada producto, con la
-cantidad y el precio como propiedades. `stock_descontado` solo está en MongoDB.
+cantidad y el precio como propiedades. `stock_descontado` y `version` solo están en MongoDB.
 
 **Venta y sus ítems.** Un único documento de la colección `ventas`:
 
@@ -515,8 +515,8 @@ antes de escribir:
   social) y en una modificación solo admite cambiar email, teléfono, obra social y número de afiliado:
   el DNI no se modifica. La baja es lógica (`activo: false`): el cliente sigue existiendo para sus
   ventas y recetas.
-- **q14** exige que el cliente exista y esté activo; que el farmacéutico esté activo y trabaje en una
-  sucursal de tipo 'Farmacia'; que cada producto exista y no esté discontinuado; y que la receta
+- **q14** exige que el cliente exista y esté activo (y lo vuelve a confirmar dentro de su transacción,
+  §8); que el farmacéutico esté activo y trabaje en una sucursal de tipo 'Farmacia'; que cada producto exista y no esté discontinuado; y que la receta
   pertenezca al cliente y esté vigente. Después, el stock vigente tiene que alcanzar (§8).
 - **q15** exige que la venta exista, esté 'Completada', no tenga el stock descontado y que el stock
   vigente de la sucursal alcance para cada ítem.
@@ -2244,7 +2244,7 @@ Rechazado: el cliente C019 está dado de baja
   referencias por id y los ítems embebidos.
 - **Validaciones** (todas antes de escribir; si una no pasa, lanza `OperacionRechazada` y no se
   modifica ningún dato):
-  - cliente existente y activo;
+  - cliente existente y activo (se vuelve a confirmar dentro de la transacción, §8);
   - farmacéutico existente, activo y de una sucursal de tipo 'Farmacia';
   - medio de pago entre los admitidos por el enunciado;
   - al menos un ítem, sin productos repetidos y con cantidades enteras positivas;
@@ -2285,6 +2285,7 @@ const receta = await recetaDeLaVenta(recetas, datos.id_receta, datos.id_cliente,
 
 // venta, dispensa y descuento de stock, en una única transacción de MongoDB
 const resultado = await transacciones.ejecutar(async (session) => {
+  await clientes.confirmarActivo(datos.id_cliente, session); // sigue activo: { _id, activo: true }, $inc version (§8)
   const venta = await ventas.registrar({ ...cabecera, total, estado: "Completada", items, stock_descontado: false }, session);
   const dispensa = receta
     ? { antes: receta, despues: await recetas.dispensar(receta, fecha, session) }
@@ -2739,8 +2740,9 @@ l.id_lote, l.unidades
 El enunciado pide que q14 y q15 funcionen juntos: si el descuento de stock falla, no puede quedar una
 venta registrada ni una receta modificada. Ventas, recetas y lotes tienen su fuente de verdad en
 MongoDB (§2.2, punto 4), así que la estrategia elegida es una **transacción multi-documento de
-MongoDB** que abarca las tres colecciones. No hace falta coordinar dos motores ni compensar
-escrituras ya confirmadas: o se confirma todo o no se confirma nada.
+MongoDB** que abarca esas tres colecciones y, para confirmar que el cliente sigue activo, también
+`clientes`. No hace falta coordinar dos motores ni compensar escrituras ya confirmadas: o se
+confirma todo o no se confirma nada.
 
 **Orden de las operaciones en q14:**
 
@@ -2749,9 +2751,11 @@ escrituras ya confirmadas: o se confirma todo o no se confirma nada.
 2. **Ids.** El id de la venta y los de sus ítems se piden a los contadores con `$inc`, fuera de la
    transacción: si la transacción se descarta, esos números quedan sin usar.
 3. **Transacción de MongoDB** (`TransaccionesMongo.ejecutar`, que usa `withTransaction` del driver):
-   1. se inserta la venta, con `stock_descontado: false`;
-   2. se registra la dispensa de la receta, si la hay;
-   3. se descuenta el stock con la parte transaccional de q15 (`descontarStockDeVenta`): lee la venta
+   1. se confirma que el cliente sigue activo (`ClientesRepository.confirmarActivo`), con un
+      `updateOne` filtrado por `{_id, activo: true}` que incrementa `version`;
+   2. se inserta la venta, con `stock_descontado: false`;
+   3. se registra la dispensa de la receta, si la hay;
+   4. se descuenta el stock con la parte transaccional de q15 (`descontarStockDeVenta`): lee la venta
       dentro de la misma sesión, calcula el descuento FEFO completo, actualiza los lotes y marca la
       venta con `stock_descontado: true`.
 
@@ -2768,8 +2772,21 @@ escrituras ya confirmadas: o se confirma todo o no se confirma nada.
 q15 ejecutada sola sigue el mismo esquema: abre su propia transacción para la parte que escribe en
 MongoDB y después actualiza la copia de los lotes.
 
-**Escrituras concurrentes.** Ninguna validación depende solo de una lectura previa:
+**Escrituras concurrentes.** Las validaciones sobre datos que otro servicio puede modificar al mismo
+tiempo no dependen solo de la lectura previa: se repiten dentro de la transacción, como filtro de una
+escritura. El farmacéutico, su sucursal y los productos se validan solo con la lectura previa porque
+ningún servicio los modifica (§2.3), así que no pueden cambiar entre la validación y la escritura.
 
+- **Cliente.** q14 valida que el cliente esté activo antes de empezar y lo vuelve a confirmar dentro
+  de la transacción con un `updateOne` filtrado por `{_id, activo: true}`, que incrementa `version`
+  (un campo técnico del documento, que las lecturas excluyen). Si una baja de q13 se confirmó entre la
+  validación y la transacción, el filtro no coincide y la venta se rechaza. Si la baja llega cuando la
+  transacción ya escribió el cliente, las dos operaciones escriben el mismo documento: la baja espera
+  a que la transacción termine y se aplica después de la venta. En ningún caso se confirma una venta
+  de un cliente que ya estaba dado de baja. Se probaron los dos casos: con la baja confirmada entre la
+  validación y la transacción, la venta se rechazó ("el cliente C006 no existe o está dado de baja")
+  y no se agregó ninguna venta; con la baja lanzada con la transacción abierta, la venta quedó
+  registrada y la baja se aplicó después.
 - **Stock.** Cada descuento filtra por `unidades >= lo que descuenta`. Además, si dos transacciones
   modifican el mismo lote a la vez, MongoDB detecta el conflicto de escritura y aborta una de ellas;
   `withTransaction` la reintenta desde el principio, así que vuelve a leer los lotes y recalcula el
@@ -2822,7 +2839,7 @@ transacción es la opción más simple y con garantías más fuertes.
   describen, y porque la red cliente–receta–venta–producto que recorre el historial queda explícita
   en el modelo, en lugar de reconstruirse con uniones en cada consulta (§2.3).
 - **Todo en Neo4j, sin MongoDB.** Evitaría las copias, pero las ventas con ítems de cantidad variable
-  encajan mejor en un documento, y q14 y q15 necesitan una transacción sobre ventas, recetas y stock
+  encajan mejor en un documento, y q14 y q15 necesitan una transacción sobre ventas, recetas, stock y clientes
   con actualizaciones atómicas condicionadas, que resolvemos en un único motor con MongoDB (§2.2,
   puntos 4 y 5).
 - **Redis (clave-valor).** Sirve para datos de referencia y rankings, pero accede solo por clave: las

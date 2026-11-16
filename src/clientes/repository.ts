@@ -1,4 +1,4 @@
-import { MongoServerError, type Collection, type Db } from "mongodb";
+import { MongoServerError, type ClientSession, type Collection, type Db } from "mongodb";
 import neo4j, { type Date as FechaNeo4j, type Driver, type Node } from "neo4j-driver";
 import { fijarContador, formatearId, siguienteNumero } from "../lib/contadores.js";
 import { OperacionRechazada } from "../lib/errores.js";
@@ -12,10 +12,17 @@ import type { Cliente } from "./types.js";
 // MongoDB es la fuente de verdad de los clientes: los escribe el ABM (q13) y los valida el registro
 // de ventas (q14). Neo4j guarda una copia de cada cliente como nodo (:Cliente), para las consultas
 // que recorren sus relaciones. Cada escritura va primero a MongoDB y después a la copia.
+//
+// El documento de MongoDB tiene además un campo técnico, `version`, que no es parte del tipo Cliente:
+// q14 lo incrementa dentro de su transacción (ver `confirmarActivo`), para que una venta y una baja
+// del mismo cliente escriban el mismo documento. Las lecturas lo excluyen (`SIN_VERSION`).
 
 /** Prefijo de los ids de cliente (C001) y nombre de su contador en la colección `contadores`. */
 const PREFIJO_ID = "C";
 const CONTADOR = "clientes";
+
+/** Proyección que deja afuera el campo técnico `version` al leer un cliente. */
+const SIN_VERSION = { projection: { version: 0 } } as const;
 
 /**
  * Acceso a clientes. Motores: MongoDB (colección `clientes`, fuente de verdad) y Neo4j (copia como
@@ -52,7 +59,25 @@ export class ClientesRepository {
   }
 
   async buscarPorId(idCliente: string): Promise<Cliente | null> {
-    return this.coleccion.findOne({ _id: idCliente });
+    return this.coleccion.findOne({ _id: idCliente }, SIN_VERSION);
+  }
+
+  /**
+   * Confirma, dentro de la transacción de `session`, que el cliente sigue activo, y lo deja escrito
+   * en la transacción (incrementa `version`). Si una baja (q13) se confirmó después de la validación
+   * previa, el filtro no coincide y la operación se rechaza. Si la baja llega después de esta
+   * escritura, con la transacción abierta, las dos escriben el mismo documento: la baja espera a que
+   * la transacción termine y se aplica después de la venta.
+   */
+  async confirmarActivo(idCliente: string, session: ClientSession): Promise<void> {
+    const { matchedCount } = await this.coleccion.updateOne(
+      { _id: idCliente, activo: true },
+      { $inc: { version: 1 } },
+      { session },
+    );
+    if (matchedCount === 0) {
+      throw new OperacionRechazada(`el cliente ${idCliente} no existe o está dado de baja`);
+    }
   }
 
   /**
@@ -96,7 +121,7 @@ export class ClientesRepository {
     const despues = await this.coleccion.findOneAndUpdate(
       antes,
       { $set: cambios },
-      { returnDocument: "after" },
+      { returnDocument: "after", ...SIN_VERSION },
     );
     if (!despues) {
       throw new OperacionRechazada(

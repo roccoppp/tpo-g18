@@ -17,8 +17,9 @@ import { descontarStockDeVenta } from "./q15.js";
 // farmacéutico y su sucursal, que solo están en el grafo, y las copias de la venta, la receta y los
 // lotes). Todas las validaciones se hacen antes de escribir. La venta, la dispensa de la receta y el
 // descuento de stock (q15) se escriben en una única transacción de MongoDB: si el stock no
-// alcanza, no queda la venta ni la receta modificada. Después de confirmarla se escriben las
-// copias en Neo4j.
+// alcanza, no queda la venta ni la receta modificada. La transacción vuelve a confirmar que el
+// cliente sigue activo, por si una baja (q13) se confirmó después de validarlo. Después de
+// confirmarla se escriben las copias en Neo4j.
 
 /**
  * Q14: registra una venta 'Completada' con fecha de hoy.
@@ -31,6 +32,8 @@ import { descontarStockDeVenta } from "./q15.js";
  *
  * Cada ítem toma el precio de lista vigente del producto, y el total es la suma de los ítems. Si
  * hay receta, registra la dispensa según las reglas de negocio (ver RecetasRepository.dispensar).
+ * Dentro de la transacción confirma de nuevo que el cliente sigue activo
+ * (ver ClientesRepository.confirmarActivo).
  * En la misma transacción descuenta el stock de la venta con q15 (FEFO, sin lotes vencidos): si
  * no alcanza para algún ítem, rechaza la venta completa.
  *
@@ -77,6 +80,7 @@ export async function q14RegistrarVenta(
     precio_unit: catalogo.get(id_producto)!.precio_unit,
   }));
   const resultado = await transacciones.ejecutar(async (session) => {
+    await clientes.confirmarActivo(datos.id_cliente, session);
     const venta = await ventas.registrar(
       {
         id_cliente: datos.id_cliente,

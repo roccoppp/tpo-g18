@@ -121,6 +121,7 @@ export class RecetasRepository {
         { $sort: { proxima_dispensa: 1, _id: 1 } },
         { $lookup: { from: "clientes", localField: "id_cliente", foreignField: "_id", as: "cliente" } },
         { $unwind: "$cliente" },
+        { $unset: "cliente.version" },
       ])
       .toArray();
     return filas.map(({ cliente, ...receta }) => ({ receta, cliente }));
@@ -139,6 +140,7 @@ export class RecetasRepository {
         { $match: { cantidad: { $gt: minimo } } },
         { $lookup: { from: "clientes", localField: "_id", foreignField: "_id", as: "cliente" } },
         { $unwind: "$cliente" },
+        { $unset: "cliente.version" },
         { $sort: { cantidad: -1, _id: 1 } },
         { $project: { _id: 0, cliente: 1, cantidad: 1 } },
       ])
