@@ -560,7 +560,7 @@ están pensados para ejercitar casos borde de las consultas:
 
 | Archivo | Registros | Caso que ejercita |
 | ------- | --------- | ----------------- |
-| `proveedores.csv` | PRV006 a PRV015 (10) | Laboratorios y droguerías de varias provincias. PRV012 y PRV015 están inactivos: PRD023 se provee de PRV012, así que q01 y q08 muestran un proveedor inactivo |
+| `proveedores.csv` | PRV006 a PRV015 (10) | Laboratorios y droguerías de varias provincias. PRV012 y PRV015 están inactivos: PRD023 se provee de PRV012, así que q01 muestra un producto activo con un proveedor inactivo |
 | `sucursales.csv` | S006 a S015 (10) | Ocho farmacias y dos droguerías. S011 es una farmacia inactiva. Las droguerías (S012, S013) no venden: q05 muestra con 0 ventas a sus farmacéuticos y q10 devuelve una lista vacía para ellas |
 | `productos.csv` | PRD014 a PRD023 (10) | Condiciones de venta libre, bajo receta y bajo receta archivada (PRD016). PRD020 está inactivo y PRD023 no tiene principio activo (`No aplica`). q07 cuenta productos vendidos y q14 valida existencia y estado activo |
 | `stock_lotes.csv` | L019 a L030 (12) | **Stock bajo** (menos de 50 unidades) en L020, L021, L022, L026 y L030, para q08. **Lotes vencidos** al 15/11/2026: L024 y L030. **Próximos a vencer**: L021 (25/11), L022 (05/12) y L029 (20/12). L030 (vencido) convive con L006 (vigente) del mismo producto y sucursal, para probar que q15 no usa lotes vencidos; L024 no tiene lote vigente que lo reemplace |
